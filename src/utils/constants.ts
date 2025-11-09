@@ -53,7 +53,7 @@ export const ALT_ADDRESS = new PublicKey(
 );
 
 export const relayer_API_URL =
-	process.env.relayer_API_URL || "https://api-dev.cloaklabs.dev";
+	process.env.relayer_API_URL || "https://dev-api.cloaklabs.dev";
 
 // ===== SPL Token Support =====
 
