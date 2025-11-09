@@ -28,7 +28,7 @@ import type {
 import { getMyUtxos, clearUtxoCache, refreshUtxos } from "../utils/getMyUtxos";
 import { ErrorCodes, ConfigurationError } from "../errors";
 import { fetchWithRetry } from "../utils/fetchWithRetry";
-import { relayer_API_URL } from "../utils/constants";
+import { relayer_API_URL, CIRCUIT_PATH } from "../utils/constants";
 
 /**
  * Cloak SDK - Privacy-preserving SOL and SPL token transfers on Solana
@@ -87,6 +87,7 @@ export class CloakSDK {
 	private relayerUrl: string;
 	private programId: string;
 	private verbose: boolean;
+	private circuitPath: string;
 	private hasher: any = null;
 	private signed: Signed | null = null;
 	private initialized: boolean = false;
@@ -102,11 +103,12 @@ export class CloakSDK {
 		this.signer = config.signer;
 		this.publicKey = config.signer.publicKey;
 		this.relayerUrl =
-			config.relayerUrl || "https://api.cloaklabs.dev";
+			config.relayerUrl || "https://dev-api.cloaklabs.dev";
 		this.programId =
 			config.programId ||
 			"8wbkRNdUfjsL3hJotuHX9innLPAdChJ5qGYG41Htpmuk";
 		this.verbose = config.verbose || false;
+		this.circuitPath = config.circuitPath || CIRCUIT_PATH;
 
 		// Set global verbose mode for logger
 		setVerbose(this.verbose);
@@ -190,6 +192,8 @@ export class CloakSDK {
 				0, // retryCount
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
+				this.relayerUrl,
+				this.circuitPath,
 			);
 
 			if (result.success) {
@@ -252,6 +256,8 @@ export class CloakSDK {
 				0, // retryCount
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
+				this.relayerUrl,
+				this.circuitPath,
 			);
 
 			if (result.success) {
@@ -334,6 +340,8 @@ export class CloakSDK {
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
+				this.relayerUrl,
+				this.circuitPath,
 			);
 
 			if (result.success) {
@@ -421,6 +429,8 @@ export class CloakSDK {
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
+				this.relayerUrl,
+				this.circuitPath,
 			);
 
 			if (result.success) {
@@ -558,7 +568,7 @@ export class CloakSDK {
 	private async checkAndRefreshTreeState(): Promise<void> {
 		try {
 			const response = await fetchWithRetry(
-				`${relayer_API_URL}/merkle/root`,
+				`${this.relayerUrl}/merkle/root`,
 				undefined,
 				3,
 			);

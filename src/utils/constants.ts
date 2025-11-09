@@ -32,9 +32,12 @@ export const TRANSACT_SPL_IX_DISCRIMINATOR = Buffer.from([
 ]);
 // For SDK, circuits are in the circuits/ directory relative to the package root
 // In Node.js, we need to use an absolute path or path relative to process.cwd()
+// In the browser, this should be a web path (e.g., /circuits/circuit2)
 export const CIRCUIT_PATH =
 	process.env.CIRCUIT_PATH ||
-	path.join(__dirname, "../../circuits/circuit2");
+	(typeof globalThis !== 'undefined' && typeof (globalThis as any).window !== 'undefined'
+		? '/circuits/circuit2'  // Browser: use web path
+		: path.join(__dirname, "../../circuits/circuit2")); // Node.js: use file path
 
 export const MERKLE_TREE_DEPTH = 26;
 
@@ -46,8 +49,9 @@ export const WITHDRAW_FEE_RATE = 0.3; // 0.25%
 
 // mainnet = 9AEDwPFezwNNjgbm7jKnYVp6iWZmaXSXmvZ94NqgCyZX
 // devnet = Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9
+const SOLANA_CLUSTER = process.env.SOLANA_CLUSTER || process.env.NEXT_PUBLIC_SOLANA_CLUSTER;
 export const ALT_ADDRESS = new PublicKey(
-	process.env.SOLANA_CLUSTER !== "devnet"
+	SOLANA_CLUSTER !== "devnet"
 		? "9AEDwPFezwNNjgbm7jKnYVp6iWZmaXSXmvZ94NqgCyZX"
 		: "Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9",
 );

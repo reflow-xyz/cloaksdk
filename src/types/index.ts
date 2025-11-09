@@ -42,6 +42,8 @@ export interface CloakSDKConfig {
   programId?: string;
   /** Enable verbose logging */
   verbose?: boolean;
+  /** Path to circuit files (without extension) for ZK proof generation */
+  circuitPath?: string;
 }
 
 /**

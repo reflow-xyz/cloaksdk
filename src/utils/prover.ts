@@ -73,8 +73,11 @@ async function prove(
 	publicSignals: string[];
 }> {
 	try {
+		console.log('[PROVE] keyBasePath received:', keyBasePath);
 		const wasmPath = `${keyBasePath}.wasm`;
 		const zkeyPath = `${keyBasePath}.zkey`;
+		console.log('[PROVE] wasmPath:', wasmPath);
+		console.log('[PROVE] zkeyPath:', zkeyPath);
 
 		const circuitInput = utilsTyped.stringifyBigInts(input);
 

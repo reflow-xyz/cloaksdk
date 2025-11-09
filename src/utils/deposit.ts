@@ -43,12 +43,12 @@ import { getMyUtxos, isUtxoSpent } from "./getMyUtxos";
 import { MerkleTree } from "./merkle_tree";
 import { parseProofToBytesArray, parseToBytesArray, prove } from "./prover";
 // Function to query remote tree state from relayer API
-async function queryRemoteTreeState(): Promise<{
+async function queryRemoteTreeState(relayerUrl: string = relayer_API_URL): Promise<{
 	root: string;
 	nextIndex: number;
 }> {
 	const response = await fetchWithRetry(
-		`${relayer_API_URL}/merkle/root`,
+		`${relayerUrl}/merkle/root`,
 		undefined,
 		3,
 	);
@@ -57,7 +57,7 @@ async function queryRemoteTreeState(): Promise<{
 		throw new NetworkError(
 			ErrorCodes.API_FETCH_FAILED,
 			`Failed to fetch Merkle root and nextIndex: ${response.status} ${response.statusText}`,
-			{ endpoint: `${relayer_API_URL}/merkle/root`, statusCode: response.status }
+			{ endpoint: `${relayerUrl}/merkle/root`, statusCode: response.status }
 		);
 	}
 
@@ -71,9 +71,10 @@ async function queryRemoteTreeState(): Promise<{
 // Function to fetch Merkle proof from API for a given commitment
 async function fetchMerkleProof(
 	commitment: string,
+	relayerUrl: string = relayer_API_URL,
 ): Promise<{ pathElements: string[]; pathIndices: number[]; index: number }> {
 	const response = await fetchWithRetry(
-		`${relayer_API_URL}/merkle/proof/${commitment}`,
+		`${relayerUrl}/merkle/proof/${commitment}`,
 		undefined,
 		3,
 	);
@@ -146,6 +147,8 @@ export async function deposit(
 	retryCount: number = 0,
 	utxoWalletSigned?: Signed, // Optional: different wallet's signature for UTXO keypair derivation
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
+	relayerUrl: string = relayer_API_URL, // Relayer URL to use
+	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 ): Promise<{ success: boolean; signature?: string }> {
 	// Validate that if utxoWalletSigned is provided, utxoWalletSignTransaction must also be provided
 	if (utxoWalletSigned && !utxoWalletSignTransaction) {
@@ -220,7 +223,7 @@ export async function deposit(
 		let currentNextIndex: number;
 
 		try {
-			const data = await queryRemoteTreeState();
+			const data = await queryRemoteTreeState(relayerUrl);
 			root = data.root;
 			currentNextIndex = data.nextIndex;
 		} catch (error) {
@@ -411,13 +414,14 @@ export async function deposit(
 			// Fetch both Merkle proofs in parallel
 			const [firstUtxoMerkleProof, secondUtxoMerkleProof] =
 				await Promise.all([
-					fetchMerkleProof(firstUtxoCommitment),
+					fetchMerkleProof(firstUtxoCommitment, relayerUrl),
 					secondUtxoIsReal
 						? secondUtxoCommitmentPromise.then(
 								(commitment) =>
 									commitment
 										? fetchMerkleProof(
 												commitment,
+												relayerUrl,
 											)
 										: null,
 							)
@@ -565,7 +569,7 @@ export async function deposit(
 		// Generate the zero-knowledge proof
 		const { proof, publicSignals } = await prove(
 			input,
-			CIRCUIT_PATH,
+			circuitPath,
 		);
 		// Parse the proof and public signals into byte arrays
 		const proofInBytes = parseProofToBytesArray(proof);
@@ -710,7 +714,7 @@ export async function deposit(
 
 		// Check if root changed before submitting transaction
 		try {
-			const updatedData = await queryRemoteTreeState();
+			const updatedData = await queryRemoteTreeState(relayerUrl);
 			if (updatedData.root !== root) {
 				logError("Merkle root changed before transaction submission. Retrying with updated state.");
 
@@ -810,7 +814,7 @@ export async function deposit(
 			let treeStateMatches = false;
 
 			while (attempts < maxPollingAttempts) {
-				const updatedTreeState = await queryRemoteTreeState();
+				const updatedTreeState = await queryRemoteTreeState(relayerUrl);
 
 				if (updatedTreeState.nextIndex === expectedNextIndex) {
 					log("Deposit complete. UTXOs added to Merkle tree.");
@@ -832,7 +836,7 @@ export async function deposit(
 			}
 
 			if (!treeStateMatches) {
-				const finalTreeState = await queryRemoteTreeState();
+				const finalTreeState = await queryRemoteTreeState(relayerUrl);
 				warn(`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}`);
 			}
 

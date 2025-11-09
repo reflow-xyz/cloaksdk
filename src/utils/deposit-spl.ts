@@ -242,6 +242,8 @@ export async function depositSpl(
 	retryCount: number = 0,
 	utxoWalletSigned?: Signed,
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
+	relayerUrl: string = relayer_API_URL, // Relayer URL to use
+	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 ): Promise<{ success: boolean; signature?: string }> {
 	if (retryCount > 0) {
 		log(`Retry attempt ${retryCount}/${maxRetries}`);
@@ -603,7 +605,7 @@ export async function depositSpl(
 		// Generate proof
 		const { proof, publicSignals } = await prove(
 			input,
-			CIRCUIT_PATH,
+			circuitPath,
 		);
 
 		const proofInBytes = parseProofToBytesArray(proof);

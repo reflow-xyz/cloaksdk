@@ -303,6 +303,8 @@ export async function withdraw(
 	utxoWalletSigned?: Signed, // Optional: different wallet's signature for UTXO keypair derivation
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
+	relayerUrl: string = relayer_API_URL, // Relayer URL to use
+	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 ): Promise<{
 	isPartial: boolean;
 	success?: boolean;
@@ -762,7 +764,7 @@ export async function withdraw(
 		// Generate the zero-knowledge proof
 		const { proof, publicSignals } = await prove(
 			input,
-			CIRCUIT_PATH,
+			circuitPath,
 		);
 
 		// Parse the proof and public signals into byte arrays

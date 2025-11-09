@@ -319,6 +319,8 @@ export async function withdrawSpl(
 	utxoWalletSigned?: Signed,
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
+	relayerUrl: string = relayer_API_URL, // Relayer URL to use
+	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 ): Promise<{
 	isPartial: boolean;
 	success?: boolean;
@@ -702,7 +704,7 @@ export async function withdrawSpl(
 		// Generate proof
 		const { proof, publicSignals } = await prove(
 			input,
-			CIRCUIT_PATH,
+			circuitPath,
 		);
 
 		const proofInBytes = parseProofToBytesArray(proof);
