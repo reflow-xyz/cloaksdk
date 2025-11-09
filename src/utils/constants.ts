@@ -47,9 +47,9 @@ export const WITHDRAW_FEE_RATE = 0.3; // 0.25%
 // mainnet = 9AEDwPFezwNNjgbm7jKnYVp6iWZmaXSXmvZ94NqgCyZX
 // devnet = Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9
 export const ALT_ADDRESS = new PublicKey(
-	process.env.SOLANA_CLUSTER === "devnet"
-		? "Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9"
-		: "9AEDwPFezwNNjgbm7jKnYVp6iWZmaXSXmvZ94NqgCyZX",
+	process.env.SOLANA_CLUSTER !== "devnet"
+		? "9AEDwPFezwNNjgbm7jKnYVp6iWZmaXSXmvZ94NqgCyZX"
+		: "Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9",
 );
 
 export const relayer_API_URL =
