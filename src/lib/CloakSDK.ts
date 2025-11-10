@@ -567,7 +567,9 @@ export class CloakSDK {
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
 				this.relayerUrl,
-				this.circuitPath
+				this.circuitPath,
+				transactionIndex, // Pass transaction index for unique dummy UTXOs in batch deposits
+				true // forceFreshDeposit: Always use fresh deposit path for batch deposits
 			);
 		} catch (err) {
 			// The deposit function will fail when trying to submit, but we already captured the transaction
