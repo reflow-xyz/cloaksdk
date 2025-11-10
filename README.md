@@ -148,6 +148,37 @@ if (result.success) {
 }
 ```
 
+#### `await sdk.batchDepositSol(options: BatchDepositOptions): Promise<BatchDepositResult>`
+
+Perform multiple SOL deposits with optimized denomination breakdown and single wallet signature.
+
+**Parameters:**
+- `options.amount` (number): Total amount in SOL to deposit
+- `options.onStatus` ((status: string) => void, optional): Callback for status updates
+
+**Returns:** `BatchDepositResult`
+- `success` (boolean): Whether all deposits succeeded
+- `totalDeposited` (number): Total amount deposited
+- `transactionCount` (number): Number of transactions executed
+- `signatures` (string[]): Array of transaction signatures
+- `error` (string, optional): Error message if failed
+
+**Example:**
+```typescript
+// Deposit 1.5 SOL broken into optimal denominations
+const result = await sdk.batchDepositSol({
+  amount: 1.5,
+  onStatus: (status) => console.log('Batch:', status)
+});
+
+if (result.success) {
+  console.log(`Deposited ${result.totalDeposited} SOL in ${result.transactionCount} transactions`);
+  result.signatures.forEach((sig, i) => {
+    console.log(`Transaction ${i + 1}: ${sig}`);
+  });
+}
+```
+
 ### SPL Token Operations
 
 #### `await sdk.depositSpl(options: DepositSplOptions): Promise<DepositResult>`
@@ -243,6 +274,28 @@ Get the user's public key.
 #### `sdk.getConnection(): Connection`
 
 Get the Solana connection instance.
+
+### Batch Planning Utilities
+
+#### `planBatchDeposits(totalAmount: number): BatchDepositPlan | null`
+
+Plan how to split a large deposit into denomination-based transactions.
+
+#### `previewBatchDeposit(totalAmount: number): BatchPreview | null`
+
+Preview batch deposit operations without executing them.
+
+**Example:**
+```typescript
+import { planBatchDeposits, previewBatchDeposit } from '@cloak-labs/sdk';
+
+const preview = previewBatchDeposit(2.5); // 2.5 SOL
+if (preview) {
+  console.log(`Will create ${preview.numTransactions} transactions`);
+  console.log(`Estimated time: ${preview.estimatedTime} seconds`);
+  console.log('Breakdown:', preview.breakdown);
+}
+```
 
 ## Complete Example
 
@@ -373,7 +426,7 @@ import type {
 
 ```bash
 # Clone the repository
-git clone https://github.com/reflow-xyz/cloak-sdk
+git clone https://github.com/reflow-xyz/cloaksdk
 cd cloak-sdk/
 
 # Install dependencies
@@ -385,5 +438,5 @@ ts-node example.ts
 
 ## Support
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/reflow-xyz/cloak-sdk/issues)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/reflow-xyz/cloaksdk/issues)
 - **Documentation**: [Full protocol documentation](https://cloaklabs.dev/docs)

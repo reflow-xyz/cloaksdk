@@ -319,26 +319,15 @@ export async function deposit(
 			let baseIndex: number;
 
 			if (transactionIndex !== undefined) {
-				// For batch deposits: derive deterministic keypairs from transaction index
-				// Use a unique seed for each dummy UTXO: combine timestamp with transaction index
-				const timestamp = Date.now();
-				const seed1 = `dummy_utxo_${timestamp}_${transactionIndex}_0`;
-				const seed2 = `dummy_utxo_${timestamp}_${transactionIndex}_1`;
-
-				// Create deterministic private keys from seeds
-				const encoder = new TextEncoder();
-				const seedBytes1 = encoder.encode(seed1);
-				const seedBytes2 = encoder.encode(seed2);
-
-				// Hash the seeds to create private keys
-				// Convert seed bytes to a hex string and take first 64 chars for private key
-				const privkey1 = BigInt('0x' + Array.from(seedBytes1).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 64));
-				const privkey2 = BigInt('0x' + Array.from(seedBytes2).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 64));
-
-				dummyKeypair1 = new UtxoKeypair(privkey1.toString(), lightWasm);
-				dummyKeypair2 = new UtxoKeypair(privkey2.toString(), lightWasm);
+				// For batch deposits: Use cryptographically secure random generation
+				// The unique indices prevent nullifier collisions, not the keypairs
+				
+				// Generate secure random keypairs - much safer than weak deterministic generation
+				dummyKeypair1 = await UtxoKeypair.generateNew(lightWasm);
+				dummyKeypair2 = await UtxoKeypair.generateNew(lightWasm);
 
 				// Use unique indices for each transaction in the batch
+				// THIS is what prevents nullifier collisions - the indices, not the keypairs
 				baseIndex = transactionIndex * 2;
 			} else {
 				// For single deposits: use random keypairs (no collision risk)

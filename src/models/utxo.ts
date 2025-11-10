@@ -8,6 +8,7 @@
 import { type LightWasm } from "@lightprotocol/hasher.rs";
 import BN from "bn.js";
 import { ethers } from "ethers";
+import { randomBytes } from "crypto";
 import { Keypair } from "./keypair";
 import { log, warn, error as error } from "../utils/logger";
 
@@ -60,13 +61,16 @@ export class Utxo {
 	}
 
 	/**
-	 * Generate a random BN value for blinding factor
-	 * Uses a 9-digit random number to match frontend behavior and keep transaction sizes small
+	 * Generate a cryptographically secure random BN value for blinding factor
+	 * Uses crypto.randomBytes for secure randomness instead of Math.random()
 	 */
 	private static randomBN(): BN {
-		// Generate a random 9-digit number (100000000 to 999999999)
-		// This matches the frontend's approach and keeps encrypted outputs small
-		return new BN(Math.floor(Math.random() * 1000000000));
+		// Generate 4 cryptographically secure random bytes
+		const randomBuffer = randomBytes(4);
+		// Convert to number and ensure it's in reasonable range for transaction sizes
+		const randomValue = randomBuffer.readUInt32BE(0);
+		// Modulo to keep in 9-digit range for consistent transaction sizes
+		return new BN((randomValue % 900000000) + 100000000);
 	}
 
 	async getCommitment(): Promise<string> {
