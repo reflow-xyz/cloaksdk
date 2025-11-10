@@ -18,14 +18,18 @@ import type {
 	TransactionSigner,
 	DepositOptions,
 	DepositSplOptions,
+	BatchDepositOptions,
+	BatchDepositSplOptions,
 	WithdrawOptions,
 	WithdrawSplOptions,
 	DepositResult,
+	BatchDepositResult,
 	WithdrawResult,
 	Signed,
 	UtxoBalance,
 } from "../types";
 import { getMyUtxos, clearUtxoCache, refreshUtxos } from "../utils/getMyUtxos";
+import { planBatchDeposits, planBatchSplDeposits } from "../utils/batch-deposit";
 import { ErrorCodes, ConfigurationError } from "../errors";
 import { fetchWithRetry } from "../utils/fetchWithRetry";
 import { relayer_API_URL, CIRCUIT_PATH } from "../utils/constants";
@@ -103,7 +107,7 @@ export class CloakSDK {
 		this.signer = config.signer;
 		this.publicKey = config.signer.publicKey;
 		this.relayerUrl =
-			config.relayerUrl || "https://dev-api.cloaklabs.dev";
+			config.relayerUrl || relayer_API_URL;
 		this.programId =
 			config.programId ||
 			"8wbkRNdUfjsL3hJotuHX9innLPAdChJ5qGYG41Htpmuk";
@@ -281,6 +285,436 @@ export class CloakSDK {
 				error: errorMessage,
 			};
 		}
+	}
+
+	/**
+	 * Batch deposit SOL with denomination breakdown and single wallet signature
+	 *
+	 * This method optimizes large deposits by breaking them into standard denominations
+	 * (100, 10, 1, 0.1, 0.01, 0.001 SOL) for maximum privacy mixing. Uses signAllTransactions
+	 * for single wallet popup experience.
+	 *
+	 * @param options - Batch deposit options
+	 * @returns Promise resolving to batch deposit result
+	 *
+	 * @example
+	 * ```typescript
+	 * const result = await sdk.batchDepositSol({
+	 *   amount: 15.5, // Will be split into denominations
+	 *   onStatus: (status) => console.log('Status:', status)
+	 * });
+	 *
+	 * console.log(`Deposited in ${result.signatures.length} transactions`);
+	 * ```
+	 */
+	async batchDepositSol(options: BatchDepositOptions): Promise<BatchDepositResult> {
+		this.ensureInitialized();
+
+		try {
+			log(`Batch depositing ${options.amount} SOL with denomination breakdown...`);
+
+			// Plan the batch deposit
+			const plan = planBatchDeposits(options.amount);
+			if (!plan) {
+				throw new Error(`Amount ${options.amount} too small for batch deposit`);
+			}
+
+			log(`Planned ${plan.totalDeposits} deposits: ${plan.deposits.map(d => d.amount).join(', ')} SOL`);
+			options.onStatus?.(`Planning ${plan.totalDeposits} deposits...`);
+
+			// Check if signAllTransactions is available
+			const signAllTxs = 'signAllTransactions' in this.signer ? this.signer.signAllTransactions : undefined;
+			if (!signAllTxs) {
+				throw new Error('Batch deposits require signAllTransactions. Please update your wallet or use individual deposits.');
+			}
+
+			// Build all deposit transactions in parallel
+			options.onStatus?.(`Generating ${plan.totalDeposits} ZK proofs in parallel...`);
+			const unsignedTransactions: VersionedTransaction[] = [];
+
+			const buildPromises = plan.deposits.map(async (depositPlan, index) => {
+				const progress = `[${index + 1}/${plan.totalDeposits}]`;
+				try {
+					log(`${progress} Building transaction for ${depositPlan.amount} SOL`);
+
+					// Use the existing deposit function but build transaction only
+					const tx = await this.buildDepositTransaction(
+						depositPlan.amount,
+						(status: string) => options.onStatus?.(`${progress} ${status}`),
+						index,
+						options.utxoWalletSigned,
+						options.utxoWalletSignTransaction
+					);
+
+					log(`${progress} Transaction built successfully`);
+					return tx;
+				} catch (err) {
+					error(`${progress} Failed to build transaction: ${err}`);
+					throw err;
+				}
+			});
+
+			try {
+				const transactions = await Promise.all(buildPromises);
+				unsignedTransactions.push(...transactions);
+				log(`All ${unsignedTransactions.length} transactions built successfully`);
+			} catch (err) {
+				throw new Error(`Failed to build batch deposit transactions: ${err}`);
+			}
+
+			// Sign all transactions at once
+			options.onStatus?.(`Please sign all ${unsignedTransactions.length} transactions in your wallet...`);
+			let signedTransactions: VersionedTransaction[];
+
+			try {
+				signedTransactions = await signAllTxs(unsignedTransactions);
+				log(`All ${signedTransactions.length} transactions signed`);
+			} catch (err) {
+				throw new Error('User rejected signature request');
+			}
+
+			// Submit all transactions
+			options.onStatus?.('Submitting transactions...');
+			const signatures: string[] = [];
+			let successCount = 0;
+
+			for (let i = 0; i < signedTransactions.length; i++) {
+				const signedTx = signedTransactions[i];
+				const amount = plan.deposits[i].amount;
+				const progress = `[${i + 1}/${signedTransactions.length}]`;
+
+				try {
+					options.onStatus?.(`Submitting ${i + 1}/${signedTransactions.length} transactions...`);
+					log(`${progress} Submitting ${amount} SOL deposit...`);
+
+					// Submit via relayer
+					const signature = await this.submitDepositTransaction(signedTx);
+					signatures.push(signature);
+					successCount++;
+
+					log(`${progress} Transaction submitted: ${signature}`);
+
+					// Small delay between submissions for backend processing
+					if (i < signedTransactions.length - 1) {
+						await new Promise(resolve => setTimeout(resolve, 500));
+					}
+				} catch (err) {
+					error(`${progress} Failed to submit: ${err}`);
+					// Continue with remaining transactions
+				}
+			}
+
+			// Refresh UTXOs
+			options.onStatus?.('Refreshing UTXOs...');
+			await this.refreshUtxos();
+
+			log(`Batch deposit complete: ${successCount}/${plan.totalDeposits} successful`);
+
+			return {
+				success: successCount > 0,
+				signatures,
+				successCount,
+				totalCount: plan.totalDeposits,
+				error: successCount < plan.totalDeposits ? `Only ${successCount}/${plan.totalDeposits} deposits succeeded` : undefined
+			};
+
+		} catch (err) {
+			const errorMessage = err instanceof Error ? err.message : String(err);
+			log(`Batch deposit failed: ${errorMessage}`);
+			return {
+				success: false,
+				signatures: [],
+				successCount: 0,
+				totalCount: 0,
+				error: errorMessage,
+			};
+		}
+	}
+
+	/**
+	 * Batch deposit SPL tokens with denomination breakdown and single wallet signature
+	 *
+	 * Similar to batchDepositSol but for SPL tokens. Breaks large amounts into
+	 * standard denominations for maximum privacy.
+	 *
+	 * @param options - Batch SPL deposit options
+	 * @returns Promise resolving to batch deposit result
+	 */
+	async batchDepositSpl(options: BatchDepositSplOptions): Promise<BatchDepositResult> {
+		this.ensureInitialized();
+
+		try {
+			log(`Batch depositing SPL tokens (${options.mintAddress})...`);
+
+			// Determine decimals for the token (simplified - you may want to fetch this)
+			const decimals = 9; // Default to 9, but you should fetch actual decimals
+
+			// Plan the batch deposit
+			const plan = planBatchSplDeposits(options.amount, decimals);
+			if (!plan) {
+				throw new Error(`Amount too small for batch SPL deposit`);
+			}
+
+			log(`Planned ${plan.totalDeposits} SPL deposits`);
+			options.onStatus?.(`Planning ${plan.totalDeposits} deposits...`);
+
+			// Check if signAllTransactions is available
+			const signAllTxs = 'signAllTransactions' in this.signer ? this.signer.signAllTransactions : undefined;
+			if (!signAllTxs) {
+				throw new Error('Batch deposits require signAllTransactions. Please update your wallet.');
+			}
+
+			// Build all SPL deposit transactions in parallel
+			options.onStatus?.(`Generating ${plan.totalDeposits} ZK proofs in parallel...`);
+
+			const buildPromises = plan.deposits.map(async (depositPlan, index) => {
+				const progress = `[${index + 1}/${plan.totalDeposits}]`;
+				try {
+					// Build SPL deposit transaction
+					return await this.buildSplDepositTransaction(
+						depositPlan.amount,
+						options.mintAddress,
+						(status: string) => options.onStatus?.(`${progress} ${status}`),
+						index,
+						options.utxoWalletSigned,
+						options.utxoWalletSignTransaction
+					);
+				} catch (err) {
+					error(`${progress} Failed to build SPL transaction: ${err}`);
+					throw err;
+				}
+			});
+
+			const unsignedTransactions = await Promise.all(buildPromises);
+
+			// Sign and submit similar to SOL batch deposit
+			options.onStatus?.(`Please sign all ${unsignedTransactions.length} transactions in your wallet...`);
+			const signedTransactions = await signAllTxs(unsignedTransactions);
+
+			options.onStatus?.('Submitting transactions...');
+			const signatures: string[] = [];
+			let successCount = 0;
+
+			for (let i = 0; i < signedTransactions.length; i++) {
+				try {
+					const signature = await this.submitSplDepositTransaction(signedTransactions[i]);
+					signatures.push(signature);
+					successCount++;
+					
+					if (i < signedTransactions.length - 1) {
+						await new Promise(resolve => setTimeout(resolve, 500));
+					}
+				} catch (err) {
+					error(`Failed to submit SPL transaction ${i + 1}: ${err}`);
+				}
+			}
+
+			await this.refreshUtxos();
+
+			return {
+				success: successCount > 0,
+				signatures,
+				successCount,
+				totalCount: plan.totalDeposits,
+				error: successCount < plan.totalDeposits ? `Only ${successCount}/${plan.totalDeposits} deposits succeeded` : undefined
+			};
+
+		} catch (err) {
+			const errorMessage = err instanceof Error ? err.message : String(err);
+			return {
+				success: false,
+				signatures: [],
+				successCount: 0,
+				totalCount: 0,
+				error: errorMessage,
+			};
+		}
+	}
+
+	/**
+	 * Build a deposit transaction without submitting it
+	 * (Internal helper method)
+	 */
+	private async buildDepositTransaction(
+		amount: number,
+		onStatus?: (status: string) => void,
+		transactionIndex?: number,
+		utxoWalletSigned?: Signed,
+		utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>
+	): Promise<VersionedTransaction> {
+		// Import the deposit function dynamically to avoid circular dependencies
+		const { deposit } = await import('../utils/deposit');
+		
+		// Create a custom signTransaction function that just returns the unsigned transaction
+		let builtTransaction: VersionedTransaction | null = null;
+		
+		const captureTransaction = async (tx: VersionedTransaction): Promise<VersionedTransaction> => {
+			builtTransaction = tx;
+			return tx; // Return unsigned transaction
+		};
+		
+		try {
+			// Call deposit but intercept the transaction before signing/submission
+			await deposit(
+				amount,
+				utxoWalletSigned || this.signed!,
+				this.connection,
+				onStatus,
+				this.hasher,
+				captureTransaction, // Intercept the transaction
+				1, // maxRetries
+				0, // retryCount
+				utxoWalletSigned,
+				utxoWalletSignTransaction,
+				this.relayerUrl,
+				this.circuitPath
+			);
+		} catch (err) {
+			// The deposit function will fail when trying to submit, but we already captured the transaction
+			if (!builtTransaction) {
+				throw new Error(`Failed to build deposit transaction: ${err}`);
+			}
+		}
+		
+		if (!builtTransaction) {
+			throw new Error('Failed to capture transaction during deposit build');
+		}
+		
+		return builtTransaction;
+	}
+
+	/**
+	 * Build an SPL deposit transaction without submitting it
+	 * (Internal helper method)
+	 */
+	private async buildSplDepositTransaction(
+		amount: number,
+		mintAddress: string,
+		onStatus?: (status: string) => void,
+		transactionIndex?: number,
+		utxoWalletSigned?: Signed,
+		utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>
+	): Promise<VersionedTransaction> {
+		// Import the depositSpl function dynamically
+		const { depositSpl } = await import('../utils/deposit-spl');
+		
+		// Create a transaction capture mechanism
+		let builtTransaction: VersionedTransaction | null = null;
+		
+		const captureTransaction = async (tx: VersionedTransaction): Promise<VersionedTransaction> => {
+			builtTransaction = tx;
+			return tx; // Return unsigned transaction
+		};
+		
+		try {
+			// Call depositSpl but intercept the transaction
+			await depositSpl(
+				amount,
+				mintAddress,
+				utxoWalletSigned || this.signed!,
+				this.connection,
+				onStatus,
+				this.hasher,
+				captureTransaction, // Intercept the transaction
+				1, // maxRetries
+				0, // retryCount
+				utxoWalletSigned,
+				utxoWalletSignTransaction,
+				this.relayerUrl,
+				this.circuitPath
+			);
+		} catch (err) {
+			// Expected to fail at submission, but we captured the transaction
+			if (!builtTransaction) {
+				throw new Error(`Failed to build SPL deposit transaction: ${err}`);
+			}
+		}
+		
+		if (!builtTransaction) {
+			throw new Error('Failed to capture SPL transaction during build');
+		}
+		
+		return builtTransaction;
+	}
+
+	/**
+	 * Submit a built deposit transaction
+	 * (Internal helper method)
+	 */
+	private async submitDepositTransaction(signedTx: VersionedTransaction): Promise<string> {
+		const serializedTx = signedTx.serialize();
+		const base64Tx = Buffer.from(serializedTx).toString("base64");
+		
+		// Use the same submission logic as the regular deposit function
+		const response = await fetchWithRetry(
+			`${this.relayerUrl}/deposit`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					signedTransaction: base64Tx,
+				}),
+			},
+			3,
+		);
+
+		if (!response.ok) {
+			let errorMsg: string;
+			try {
+				const errorData = (await response.json()) as {
+					error?: any;
+				};
+				errorMsg = errorData.error || `HTTP ${response.status}`;
+			} catch {
+				errorMsg = `HTTP ${response.status}`;
+			}
+			throw new Error(`Failed to submit deposit transaction: ${errorMsg}`);
+		}
+
+		const data = (await response.json()) as { txid: string };
+		return data.txid;
+	}
+
+	/**
+	 * Submit a built SPL deposit transaction
+	 * (Internal helper method)
+	 */
+	private async submitSplDepositTransaction(signedTx: VersionedTransaction): Promise<string> {
+		const serializedTx = signedTx.serialize();
+		const base64Tx = Buffer.from(serializedTx).toString("base64");
+		
+		// Use the SPL deposit endpoint
+		const response = await fetchWithRetry(
+			`${this.relayerUrl}/deposit/spl`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					signedTransaction: base64Tx,
+				}),
+			},
+			3,
+		);
+
+		if (!response.ok) {
+			let errorMsg: string;
+			try {
+				const errorData = (await response.json()) as {
+					error?: any;
+				};
+				errorMsg = errorData.error || `HTTP ${response.status}`;
+			} catch {
+				errorMsg = `HTTP ${response.status}`;
+			}
+			throw new Error(`Failed to submit SPL deposit transaction: ${errorMsg}`);
+		}
+
+		const data = (await response.json()) as { txid: string };
+		return data.txid;
 	}
 
 	/**

@@ -44,9 +44,12 @@ export type {
   CloakSDKConfig,
   DepositOptions,
   DepositSplOptions,
+  BatchDepositOptions,
+  BatchDepositSplOptions,
   WithdrawOptions,
   WithdrawSplOptions,
   DepositResult,
+  BatchDepositResult,
   WithdrawResult,
   Signed,
   UtxoBalance,
@@ -56,7 +59,9 @@ export type {
 export { getHasher } from './utils/hasher';
 export { getAccountSign, generateUtxoWalletSignature } from './utils/getAccountSign';
 export { planBatchWithdrawals, previewBatchWithdrawal } from './utils/batch-withdraw';
+export { planBatchDeposits, previewBatchDeposit, planBatchSplDeposits, previewBatchSplDeposit } from './utils/batch-deposit';
 export type { BatchWithdrawPlan } from './utils/batch-withdraw';
+export type { BatchDepositPlan } from './utils/batch-deposit';
 export { isHardwareAccelerationEnabled } from './utils/encryption';
 
 // Export error types and codes

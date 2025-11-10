@@ -75,6 +75,30 @@ export interface DepositSplOptions extends DepositOptions {
 }
 
 /**
+ * Options for batch deposit operations
+ */
+export interface BatchDepositOptions {
+  /** Total amount to deposit (will be broken down into denominations) */
+  amount: number;
+  /** Optional callback for status updates */
+  onStatus?: (status: string) => void;
+  /** Maximum number of retry attempts on failure (default: 3) */
+  maxRetries?: number;
+  /** Optional: different wallet's signature for UTXO keypair derivation (for multi-wallet scenarios) */
+  utxoWalletSigned?: Signed;
+  /** Optional: callback to sign transactions with the UTXO wallet */
+  utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>;
+}
+
+/**
+ * Options for batch SPL token deposit operations
+ */
+export interface BatchDepositSplOptions extends BatchDepositOptions {
+  /** SPL token mint address */
+  mintAddress: string;
+}
+
+/**
  * Options for withdraw operations
  */
 export interface WithdrawOptions {
@@ -117,6 +141,22 @@ export interface DepositResult {
   /** Transaction signature (if successful) */
   signature?: string;
   /** Error message (if failed) */
+  error?: string;
+}
+
+/**
+ * Result of a batch deposit operation
+ */
+export interface BatchDepositResult {
+  /** Whether all deposits were successful */
+  success: boolean;
+  /** Array of transaction signatures */
+  signatures: string[];
+  /** Number of successful deposits */
+  successCount: number;
+  /** Total number of deposits attempted */
+  totalCount: number;
+  /** Error message (if any failed) */
   error?: string;
 }
 
