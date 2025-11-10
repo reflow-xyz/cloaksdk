@@ -149,7 +149,10 @@ export async function deposit(
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
 	relayerUrl: string = relayer_API_URL, // Relayer URL to use
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
-): Promise<{ success: boolean; signature?: string }> {
+	transactionIndex?: number, // Index for batch deposits to create unique dummy UTXOs
+	forceFreshDeposit?: boolean, // Force fresh deposit path (skip UTXO fetching) for batch deposits
+	buildOnly?: boolean, // Only build the transaction, don't submit or confirm it
+): Promise<{ success: boolean; signature?: string; transaction?: VersionedTransaction }> {
 	// Validate that if utxoWalletSigned is provided, utxoWalletSignTransaction must also be provided
 	if (utxoWalletSigned && !utxoWalletSignTransaction) {
 		throw new ValidationError(
@@ -250,34 +253,39 @@ export async function deposit(
 		const utxoKeypair = new UtxoKeypair(utxoPrivateKey, lightWasm);
 
 		// Fetch existing UTXOs for this UTXO wallet (may be different from transaction wallet)
-		const allUtxos = await getMyUtxos(
-			utxoWalletSigned || signed, // Use UTXO wallet if provided, otherwise transaction wallet
-			connection,
-			setStatus,
-			hasher,
-		);
+		// Skip UTXO fetching for batch deposits to avoid locking conflicts
+		let existingUnspentUtxos: Utxo[] = [];
+		
+		if (!forceFreshDeposit) {
+			const allUtxos = await getMyUtxos(
+				utxoWalletSigned || signed, // Use UTXO wallet if provided, otherwise transaction wallet
+				connection,
+				setStatus,
+				hasher,
+			);
 
-		// Filter out zero-amount UTXOs (dummy UTXOs that can't be spent)
-		const nonZeroUtxos = allUtxos.filter((utxo) =>
-			utxo.amount.gt(new BN(0)),
-		);
+			// Filter out zero-amount UTXOs (dummy UTXOs that can't be spent)
+			const nonZeroUtxos = allUtxos.filter((utxo) =>
+				utxo.amount.gt(new BN(0)),
+			);
 
-		// Filter to only include SOL UTXOs (mint address = "11111111111111111111111111111112")
-		const solUtxos = nonZeroUtxos.filter(
-			(utxo) =>
-				utxo.mintAddress ===
-				"11111111111111111111111111111112",
-		);
+			// Filter to only include SOL UTXOs (mint address = "11111111111111111111111111111112")
+			const solUtxos = nonZeroUtxos.filter(
+				(utxo) =>
+					utxo.mintAddress ===
+					"11111111111111111111111111111112",
+			);
 
-		// Check which SOL UTXOs are unspent
-		const utxoSpentStatuses = await Promise.all(
-			solUtxos.map((utxo) => isUtxoSpent(connection, utxo)),
-		);
+			// Check which SOL UTXOs are unspent
+			const utxoSpentStatuses = await Promise.all(
+				solUtxos.map((utxo) => isUtxoSpent(connection, utxo)),
+			);
 
-		// Filter to only include unspent SOL UTXOs
-		const existingUnspentUtxos = solUtxos.filter(
-			(utxo, index) => !utxoSpentStatuses[index],
-		);
+			// Filter to only include unspent SOL UTXOs
+			existingUnspentUtxos = solUtxos.filter(
+				(utxo, index) => !utxoSpentStatuses[index],
+			);
+		}
 
 		// Calculate output amounts and external amount based on scenario
 		let extAmount: number;
@@ -303,16 +311,54 @@ export async function deposit(
 				numAdditionalAccounts: 5,
 			});
 
-			// Use two dummy UTXOs as inputs with RANDOM keypairs (not the user's utxoKeypair)
-			// This ensures dummy input nullifiers can never collide with real spendable UTXOs
+			// Use two dummy UTXOs as inputs with DETERMINISTIC keypairs for batch deposits
+			// This ensures dummy input nullifiers can never collide across batch transactions
+
+			// Create unique deterministic keypairs for batch deposits
+			let dummyKeypair1: UtxoKeypair, dummyKeypair2: UtxoKeypair;
+			let baseIndex: number;
+
+			if (transactionIndex !== undefined) {
+				// For batch deposits: derive deterministic keypairs from transaction index
+				// Use a unique seed for each dummy UTXO: combine timestamp with transaction index
+				const timestamp = Date.now();
+				const seed1 = `dummy_utxo_${timestamp}_${transactionIndex}_0`;
+				const seed2 = `dummy_utxo_${timestamp}_${transactionIndex}_1`;
+
+				// Create deterministic private keys from seeds
+				const encoder = new TextEncoder();
+				const seedBytes1 = encoder.encode(seed1);
+				const seedBytes2 = encoder.encode(seed2);
+
+				// Hash the seeds to create private keys
+				// Convert seed bytes to a hex string and take first 64 chars for private key
+				const privkey1 = BigInt('0x' + Array.from(seedBytes1).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 64));
+				const privkey2 = BigInt('0x' + Array.from(seedBytes2).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 64));
+
+				dummyKeypair1 = new UtxoKeypair(privkey1.toString(), lightWasm);
+				dummyKeypair2 = new UtxoKeypair(privkey2.toString(), lightWasm);
+
+				// Use unique indices for each transaction in the batch
+				baseIndex = transactionIndex * 2;
+			} else {
+				// For single deposits: use random keypairs (no collision risk)
+				dummyKeypair1 = await UtxoKeypair.generateNew(lightWasm);
+				dummyKeypair2 = await UtxoKeypair.generateNew(lightWasm);
+				baseIndex = 0;
+			}
+
 			inputs = [
 				new Utxo({
 					lightWasm,
-					// Don't specify keypair - let it generate a random one
+					keypair: dummyKeypair1,
+					index: baseIndex,
+					amount: 0,
 				}),
 				new Utxo({
 					lightWasm,
-					// Don't specify keypair - let it generate a random one
+					keypair: dummyKeypair2,
+					index: baseIndex + 1,
+					amount: 0,
 				}),
 			];
 
@@ -712,6 +758,16 @@ export async function deposit(
 		signedTx = await signingCallback(transaction);
 		const serializedTx = signedTx.serialize();
 
+		// If buildOnly is true, return the signed transaction without submitting
+		if (buildOnly) {
+			log("Build-only mode: returning signed transaction without submission");
+			return { 
+				success: true, 
+				transaction: signedTx,
+				signature: undefined 
+			};
+		}
+
 		// Check if root changed before submitting transaction
 		try {
 			const updatedData = await queryRemoteTreeState(relayerUrl);
@@ -730,6 +786,11 @@ export async function deposit(
 					retryCount,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					relayerUrl,
+					circuitPath,
+					transactionIndex,
+					forceFreshDeposit,
+					buildOnly,
 				);
 			}
 		} catch (error) {
@@ -892,6 +953,11 @@ export async function deposit(
 					retryCount + 1,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					relayerUrl,
+					circuitPath,
+					transactionIndex,
+					forceFreshDeposit,
+					buildOnly,
 				);
 			}
 		}
@@ -930,6 +996,11 @@ export async function deposit(
 				retryCount + 1,
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
+				relayerUrl,
+				circuitPath,
+				transactionIndex,
+				forceFreshDeposit,
+				buildOnly,
 			);
 		}
 
