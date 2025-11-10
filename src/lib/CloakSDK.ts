@@ -554,8 +554,8 @@ export class CloakSDK {
 		};
 		
 		try {
-			// Call deposit but intercept the transaction before signing/submission
-			await deposit(
+			// Call deposit with buildOnly flag to prevent submission
+			const result = await deposit(
 				amount,
 				utxoWalletSigned || this.signed!,
 				this.connection,
@@ -569,13 +569,16 @@ export class CloakSDK {
 				this.relayerUrl,
 				this.circuitPath,
 				transactionIndex, // Pass transaction index for unique dummy UTXOs in batch deposits
-				true // forceFreshDeposit: Always use fresh deposit path for batch deposits
+				true, // forceFreshDeposit: Skip UTXO fetching for batch deposits to avoid conflicts
+				true // buildOnly: Only build the transaction, don't submit it
 			);
-		} catch (err) {
-			// The deposit function will fail when trying to submit, but we already captured the transaction
-			if (!builtTransaction) {
-				throw new Error(`Failed to build deposit transaction: ${err}`);
+			
+			// Get the transaction from the result
+			if (result.transaction) {
+				builtTransaction = result.transaction;
 			}
+		} catch (err) {
+			throw new Error(`Failed to build deposit transaction: ${err}`);
 		}
 		
 		if (!builtTransaction) {

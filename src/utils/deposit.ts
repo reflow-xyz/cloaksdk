@@ -150,8 +150,9 @@ export async function deposit(
 	relayerUrl: string = relayer_API_URL, // Relayer URL to use
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 	transactionIndex?: number, // Index for batch deposits to create unique dummy UTXOs
-	forceFreshDeposit?: boolean, // Force fresh deposit path (ignore existing UTXOs) for batch deposits
-): Promise<{ success: boolean; signature?: string }> {
+	forceFreshDeposit?: boolean, // Force fresh deposit path (skip UTXO fetching) for batch deposits
+	buildOnly?: boolean, // Only build the transaction, don't submit or confirm it
+): Promise<{ success: boolean; signature?: string; transaction?: VersionedTransaction }> {
 	// Validate that if utxoWalletSigned is provided, utxoWalletSignTransaction must also be provided
 	if (utxoWalletSigned && !utxoWalletSignTransaction) {
 		throw new ValidationError(
@@ -252,7 +253,7 @@ export async function deposit(
 		const utxoKeypair = new UtxoKeypair(utxoPrivateKey, lightWasm);
 
 		// Fetch existing UTXOs for this UTXO wallet (may be different from transaction wallet)
-		// Skip UTXO fetching if forceFreshDeposit is true (for batch deposits)
+		// Skip UTXO fetching for batch deposits to avoid locking conflicts
 		let existingUnspentUtxos: Utxo[] = [];
 		
 		if (!forceFreshDeposit) {
@@ -312,41 +313,13 @@ export async function deposit(
 
 			// Use two dummy UTXOs as inputs with RANDOM keypairs (not the user's utxoKeypair)
 			// This ensures dummy input nullifiers can never collide with real spendable UTXOs
-			// For batch deposits, use transactionIndex to ensure unique dummy UTXOs
-			const baseIndex = transactionIndex ? transactionIndex * 2 : 0;
-			
-			// Use random blinding factors for batch deposits to prevent nullifier collisions
-			// Combine timestamp with transaction index and random values to create unique blinding factors
-			let blinding1: BN, blinding2: BN;
-			if (transactionIndex !== undefined) {
-				// For batch deposits: use timestamp + transaction index + random to ensure uniqueness
-				const timestamp = Date.now();
-				const random1 = Math.floor(Math.random() * 1e6); // Random up to 1 million  
-				const random2 = Math.floor(Math.random() * 1e6);
-				// Combine without overflow: timestamp + transactionIndex*1e6 + random
-				const randomSeed1 = timestamp + transactionIndex * 1e6 + random1;
-				const randomSeed2 = timestamp + transactionIndex * 1e6 + random2;
-				blinding1 = new BN(randomSeed1.toString());
-				blinding2 = new BN(randomSeed2.toString());
-			} else {
-				// For single deposits: let it generate default blinding
-				blinding1 = new BN(0); // Default
-				blinding2 = new BN(0); // Default
-			}
-			
 			inputs = [
 				new Utxo({
 					lightWasm,
-					amount: 0,
-					index: baseIndex, // Use unique index based on transaction position
-					blinding: blinding1, // Use unique blinding factor for batch deposits
 					// Don't specify keypair - let it generate a random one
 				}),
 				new Utxo({
 					lightWasm,
-					amount: 0,
-					index: baseIndex + 1, // Use unique index based on transaction position  
-					blinding: blinding2, // Use unique blinding factor for batch deposits
 					// Don't specify keypair - let it generate a random one
 				}),
 			];
@@ -429,7 +402,6 @@ export async function deposit(
 							lightWasm,
 							// Don't specify keypair - use random to avoid nullifier collisions
 							amount: new BN("0"),
-							index: transactionIndex ? transactionIndex + 1000 : 500, // Use unique index for consolidation dummy UTXO
 					  });
 
 			inputs = [
@@ -748,6 +720,16 @@ export async function deposit(
 		signedTx = await signingCallback(transaction);
 		const serializedTx = signedTx.serialize();
 
+		// If buildOnly is true, return the signed transaction without submitting
+		if (buildOnly) {
+			log("Build-only mode: returning signed transaction without submission");
+			return { 
+				success: true, 
+				transaction: signedTx,
+				signature: undefined 
+			};
+		}
+
 		// Check if root changed before submitting transaction
 		try {
 			const updatedData = await queryRemoteTreeState(relayerUrl);
@@ -766,6 +748,11 @@ export async function deposit(
 					retryCount,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					relayerUrl,
+					circuitPath,
+					transactionIndex,
+					forceFreshDeposit,
+					buildOnly,
 				);
 			}
 		} catch (error) {
@@ -928,6 +915,11 @@ export async function deposit(
 					retryCount + 1,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					relayerUrl,
+					circuitPath,
+					transactionIndex,
+					forceFreshDeposit,
+					buildOnly,
 				);
 			}
 		}
@@ -966,6 +958,11 @@ export async function deposit(
 				retryCount + 1,
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
+				relayerUrl,
+				circuitPath,
+				transactionIndex,
+				forceFreshDeposit,
+				buildOnly,
 			);
 		}
 
