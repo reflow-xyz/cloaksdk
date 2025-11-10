@@ -311,16 +311,54 @@ export async function deposit(
 				numAdditionalAccounts: 5,
 			});
 
-			// Use two dummy UTXOs as inputs with RANDOM keypairs (not the user's utxoKeypair)
-			// This ensures dummy input nullifiers can never collide with real spendable UTXOs
+			// Use two dummy UTXOs as inputs with DETERMINISTIC keypairs for batch deposits
+			// This ensures dummy input nullifiers can never collide across batch transactions
+
+			// Create unique deterministic keypairs for batch deposits
+			let dummyKeypair1: UtxoKeypair, dummyKeypair2: UtxoKeypair;
+			let baseIndex: number;
+
+			if (transactionIndex !== undefined) {
+				// For batch deposits: derive deterministic keypairs from transaction index
+				// Use a unique seed for each dummy UTXO: combine timestamp with transaction index
+				const timestamp = Date.now();
+				const seed1 = `dummy_utxo_${timestamp}_${transactionIndex}_0`;
+				const seed2 = `dummy_utxo_${timestamp}_${transactionIndex}_1`;
+
+				// Create deterministic private keys from seeds
+				const encoder = new TextEncoder();
+				const seedBytes1 = encoder.encode(seed1);
+				const seedBytes2 = encoder.encode(seed2);
+
+				// Hash the seeds to create private keys
+				// Convert seed bytes to a hex string and take first 64 chars for private key
+				const privkey1 = BigInt('0x' + Array.from(seedBytes1).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 64));
+				const privkey2 = BigInt('0x' + Array.from(seedBytes2).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 64));
+
+				dummyKeypair1 = new UtxoKeypair(privkey1.toString(), lightWasm);
+				dummyKeypair2 = new UtxoKeypair(privkey2.toString(), lightWasm);
+
+				// Use unique indices for each transaction in the batch
+				baseIndex = transactionIndex * 2;
+			} else {
+				// For single deposits: use random keypairs (no collision risk)
+				dummyKeypair1 = await UtxoKeypair.generateNew(lightWasm);
+				dummyKeypair2 = await UtxoKeypair.generateNew(lightWasm);
+				baseIndex = 0;
+			}
+
 			inputs = [
 				new Utxo({
 					lightWasm,
-					// Don't specify keypair - let it generate a random one
+					keypair: dummyKeypair1,
+					index: baseIndex,
+					amount: 0,
 				}),
 				new Utxo({
 					lightWasm,
-					// Don't specify keypair - let it generate a random one
+					keypair: dummyKeypair2,
+					index: baseIndex + 1,
+					amount: 0,
 				}),
 			];
 
