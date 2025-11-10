@@ -373,7 +373,7 @@ import type {
 
 ```bash
 # Clone the repository
-git clone https://github.com/reflow-xyz/cloak-sdk
+git clone https://github.com/reflow-xyz/cloaksdk
 cd cloak-sdk/
 
 # Install dependencies
@@ -385,5 +385,5 @@ ts-node example.ts
 
 ## Support
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/reflow-xyz/cloak-sdk/issues)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/reflow-xyz/cloaksdk/issues)
 - **Documentation**: [Full protocol documentation](https://cloaklabs.dev/docs)
