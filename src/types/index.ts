@@ -133,6 +133,34 @@ export interface WithdrawSplOptions extends WithdrawOptions {
 }
 
 /**
+ * Options for batch withdraw operations
+ */
+export interface BatchWithdrawOptions {
+  /** Recipient address */
+  recipientAddress: PublicKey | string;
+  /** Total amount to withdraw (may require multiple transactions if >2 UTXOs needed) */
+  amount: number;
+  /** Optional delay in minutes before withdrawal is executed (0 for immediate) */
+  delayMinutes?: number;
+  /** Optional callback for status updates */
+  onStatus?: (status: string) => void;
+  /** Maximum number of retry attempts on failure (default: 3) */
+  maxRetries?: number;
+  /** Optional: different wallet's signature for UTXO keypair derivation (for multi-wallet scenarios) */
+  utxoWalletSigned?: Signed;
+  /** Optional: callback to sign transactions with the UTXO wallet */
+  utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>;
+}
+
+/**
+ * Options for batch SPL token withdraw operations
+ */
+export interface BatchWithdrawSplOptions extends BatchWithdrawOptions {
+  /** SPL token mint address */
+  mintAddress: string;
+}
+
+/**
  * Result of a deposit operation
  */
 export interface DepositResult {
@@ -177,6 +205,24 @@ export interface WithdrawResult {
   /** Execution timestamp (if delayed) */
   executeAt?: string;
   /** Error message (if failed) */
+  error?: string;
+}
+
+/**
+ * Result of a batch withdraw operation
+ */
+export interface BatchWithdrawResult {
+  /** Whether all withdrawals were successful */
+  success: boolean;
+  /** Array of transaction signatures */
+  signatures: string[];
+  /** Number of successful withdrawals */
+  successCount: number;
+  /** Total number of withdrawals attempted */
+  totalCount: number;
+  /** Whether withdrawal was partial (insufficient balance) */
+  isPartial?: boolean;
+  /** Error message (if any failed) */
   error?: string;
 }
 

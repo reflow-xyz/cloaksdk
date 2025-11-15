@@ -1,4 +1,4 @@
-# @cloak-labs/sdk
+# @cloak-dev/sdk
 
 Official SDK for the Cloak Privacy Protocol on Solana. Deposit and withdraw SOL and SPL tokens with zero-knowledge proof privacy guarantees.
 
@@ -15,19 +15,19 @@ Official SDK for the Cloak Privacy Protocol on Solana. Deposit and withdraw SOL 
 ## Installation
 
 ```bash
-npm install @cloak-labs/sdk
+npm install @cloak-dev/sdk
 
 # or
-yarn add @cloak-labs/sdk
+yarn add @cloak-dev/sdk
 
 # or
-pnpm add @cloak-labs/sdk
+pnpm add @cloak-dev/sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { CloakSDK, Connection, Keypair } from '@cloak-labs/sdk';
+import { CloakSDK, Connection, Keypair } from '@cloak-dev/sdk';
 
 // Initialize connection and keypair
 const connection = new Connection('https://api.devnet.solana.com');
@@ -287,7 +287,7 @@ Preview batch deposit operations without executing them.
 
 **Example:**
 ```typescript
-import { planBatchDeposits, previewBatchDeposit } from '@cloak-labs/sdk';
+import { planBatchDeposits, previewBatchDeposit } from '@cloak-dev/sdk';
 
 const preview = previewBatchDeposit(2.5); // 2.5 SOL
 if (preview) {
@@ -300,7 +300,7 @@ if (preview) {
 ## Complete Example
 
 ```typescript
-import { CloakSDK, Connection, Keypair, LAMPORTS_PER_SOL } from '@cloak-labs/sdk';
+import { CloakSDK, Connection, Keypair, LAMPORTS_PER_SOL } from '@cloak-dev/sdk';
 import fs from 'fs';
 
 async function main() {
@@ -419,7 +419,7 @@ import type {
   WithdrawOptions,
   WithdrawResult,
   UtxoBalance,
-} from '@cloak-labs/sdk';
+} from '@cloak-dev/sdk';
 ```
 
 ## Building from Source

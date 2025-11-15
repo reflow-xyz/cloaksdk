@@ -1,5 +1,5 @@
 /**
- * @cloak-labs/sdk - Cloak Privacy Protocol SDK
+ * @cloak-dev/sdk - Cloak Privacy Protocol SDK
  *
  * Official SDK for interacting with the Cloak Privacy Protocol on Solana.
  * Provides simple interfaces for depositing and withdrawing SOL and SPL tokens
@@ -7,7 +7,7 @@
  *
  * @example
  * ```typescript
- * import { CloakSDK } from '@cloak-labs/sdk';
+ * import { CloakSDK } from '@cloak-dev/sdk';
  * import { Connection, Keypair } from '@solana/web3.js';
  *
  * // Initialize SDK
@@ -48,9 +48,12 @@ export type {
   BatchDepositSplOptions,
   WithdrawOptions,
   WithdrawSplOptions,
+  BatchWithdrawOptions,
+  BatchWithdrawSplOptions,
   DepositResult,
   BatchDepositResult,
   WithdrawResult,
+  BatchWithdrawResult,
   Signed,
   UtxoBalance,
 } from './types';

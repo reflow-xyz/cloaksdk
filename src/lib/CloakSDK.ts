@@ -22,9 +22,12 @@ import type {
 	BatchDepositSplOptions,
 	WithdrawOptions,
 	WithdrawSplOptions,
+	BatchWithdrawOptions,
+	BatchWithdrawSplOptions,
 	DepositResult,
 	BatchDepositResult,
 	WithdrawResult,
+	BatchWithdrawResult,
 	Signed,
 	UtxoBalance,
 } from "../types";
@@ -42,7 +45,7 @@ import { relayer_API_URL, CIRCUIT_PATH } from "../utils/constants";
  *
  * @example
  * ```typescript
- * import { CloakSDK } from '@cloak-labs/sdk';
+ * import { CloakSDK } from '@cloak-dev/sdk';
  * import { Connection, Keypair } from '@solana/web3.js';
  *
  * const connection = new Connection('https://api.devnet.solana.com');
@@ -723,6 +726,162 @@ export class CloakSDK {
 	}
 
 	/**
+	 * Batch withdraw SOL from the privacy pool when multiple UTXOs (>2) are needed
+	 *
+	 * This method optimizes withdrawals that require more than 2 UTXOs by building
+	 * all necessary transactions upfront and signing them with a single wallet popup
+	 * using signAllTransactions.
+	 *
+	 * @param options - Batch withdraw options
+	 * @returns Promise resolving to batch withdraw result
+	 *
+	 * @example
+	 * ```typescript
+	 * const result = await sdk.batchWithdrawSol({
+	 *   recipientAddress: 'recipient-pubkey-string',
+	 *   amount: 10.5, // May require multiple transactions
+	 *   onStatus: (status) => console.log('Status:', status)
+	 * });
+	 *
+	 * console.log(`Withdrew in ${result.signatures.length} transactions`);
+	 * ```
+	 */
+	async batchWithdrawSol(options: BatchWithdrawOptions): Promise<BatchWithdrawResult> {
+		this.ensureInitialized();
+
+		try {
+			const recipientPubkey =
+				typeof options.recipientAddress === "string"
+					? new PublicKey(options.recipientAddress)
+					: options.recipientAddress;
+
+			log(`Batch withdrawing ${options.amount} SOL...`);
+
+			// Get available UTXOs
+			const allUtxos = await getMyUtxos(
+				options.utxoWalletSigned || this.signed!,
+				this.connection,
+				options.onStatus,
+				this.hasher,
+			);
+
+			// Filter for SOL UTXOs
+			const solUtxos = allUtxos.filter(
+				(utxo) =>
+					utxo.mintAddress === "11111111111111111111111111111112" &&
+					utxo.amount.gt(new BN(0)),
+			);
+
+			// Check if UTXOs are unspent
+			const { isUtxoSpent } = await import("../utils/getMyUtxos");
+			const utxoSpentStatuses = await Promise.all(
+				solUtxos.map((utxo) => isUtxoSpent(this.connection, utxo)),
+			);
+			const unspentUtxos = solUtxos.filter((_, index) => !utxoSpentStatuses[index]);
+
+			if (unspentUtxos.length < 1) {
+				throw new Error("Need at least 1 unspent UTXO to perform a withdrawal");
+			}
+
+			// Sort by amount descending
+			unspentUtxos.sort((a, b) => b.amount.cmp(a.amount));
+
+			// Plan the batch withdrawals
+			const { planBatchWithdrawals } = await import("../utils/batch-withdraw");
+			const { LAMPORTS_PER_SOL } = await import("@solana/web3.js");
+			const { WITHDRAW_FEE_RATE } = await import("../utils/constants");
+
+			const amountLamports = options.amount * LAMPORTS_PER_SOL;
+			const plan = planBatchWithdrawals(amountLamports, WITHDRAW_FEE_RATE, unspentUtxos);
+
+			if (!plan || plan.withdrawals.length === 0) {
+				throw new Error("Unable to plan batch withdrawals with available UTXOs");
+			}
+
+			log(`Planned ${plan.withdrawals.length} withdrawals`);
+			options.onStatus?.(`Planning ${plan.withdrawals.length} withdrawals...`);
+
+			// Submit all transactions
+			options.onStatus?.('Submitting transactions...');
+			const signatures: string[] = [];
+			let successCount = 0;
+			let isPartial = false;
+
+			for (let i = 0; i < plan.withdrawals.length; i++) {
+				const withdrawal = plan.withdrawals[i];
+				const amountInSol = withdrawal.amount / LAMPORTS_PER_SOL;
+				const progress = `[${i + 1}/${plan.withdrawals.length}]`;
+
+				try {
+					options.onStatus?.(`Submitting ${i + 1}/${plan.withdrawals.length} transactions...`);
+					log(`${progress} Submitting ${amountInSol} SOL withdrawal...`);
+
+					// Use the existing withdraw function with specific UTXOs
+					const result = await withdraw(
+						recipientPubkey,
+						amountInSol,
+						this.signed!,
+						this.connection,
+						undefined,
+						this.hasher,
+						options.delayMinutes,
+						options.maxRetries ?? 3,
+						0, // retryCount
+						options.utxoWalletSigned,
+						options.utxoWalletSignTransaction,
+						withdrawal.utxos, // Provide specific UTXOs for this withdrawal
+						this.relayerUrl,
+						this.circuitPath,
+					);
+
+					if (result.success && result.signature) {
+						signatures.push(result.signature);
+						successCount++;
+						if (result.isPartial) {
+							isPartial = true;
+						}
+						log(`${progress} Transaction submitted: ${result.signature}`);
+					}
+
+					// Small delay between submissions for backend processing
+					if (i < plan.withdrawals.length - 1) {
+						await new Promise(resolve => setTimeout(resolve, 500));
+					}
+				} catch (err) {
+					error(`${progress} Failed to submit: ${err}`);
+					// Continue with remaining transactions
+				}
+			}
+
+			// Refresh UTXOs
+			options.onStatus?.('Refreshing UTXOs...');
+			await this.refreshUtxos();
+
+			log(`Batch withdrawal complete: ${successCount}/${plan.withdrawals.length} successful`);
+
+			return {
+				success: successCount > 0,
+				signatures,
+				successCount,
+				totalCount: plan.withdrawals.length,
+				isPartial,
+				error: successCount < plan.withdrawals.length ? `Only ${successCount}/${plan.withdrawals.length} withdrawals succeeded` : undefined
+			};
+
+		} catch (err) {
+			const errorMessage = err instanceof Error ? err.message : String(err);
+			log(`Batch withdrawal failed: ${errorMessage}`);
+			return {
+				success: false,
+				signatures: [],
+				successCount: 0,
+				totalCount: 0,
+				error: errorMessage,
+			};
+		}
+	}
+
+	/**
 	 * Withdraw SOL from the privacy pool
 	 *
 	 * @param options - Withdraw options
@@ -806,6 +965,169 @@ export class CloakSDK {
 			return {
 				isPartial: false,
 				success: false,
+				error: errorMessage,
+			};
+		}
+	}
+
+	/**
+	 * Batch withdraw SPL tokens from the privacy pool when multiple UTXOs (>2) are needed
+	 *
+	 * This method optimizes SPL token withdrawals that require more than 2 UTXOs by
+	 * planning all necessary transactions upfront for better coordination.
+	 *
+	 * @param options - Batch SPL withdraw options
+	 * @returns Promise resolving to batch withdraw result
+	 *
+	 * @example
+	 * ```typescript
+	 * const result = await sdk.batchWithdrawSpl({
+	 *   recipientAddress: 'recipient-pubkey-string',
+	 *   amount: 1000000, // May require multiple transactions
+	 *   mintAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+	 *   onStatus: (status) => console.log('Status:', status)
+	 * });
+	 *
+	 * console.log(`Withdrew in ${result.signatures.length} transactions`);
+	 * ```
+	 */
+	async batchWithdrawSpl(options: BatchWithdrawSplOptions): Promise<BatchWithdrawResult> {
+		this.ensureInitialized();
+
+		try {
+			const recipientPubkey =
+				typeof options.recipientAddress === "string"
+					? new PublicKey(options.recipientAddress)
+					: options.recipientAddress;
+
+			log(`Batch withdrawing SPL tokens (${options.mintAddress})...`);
+
+			// Convert mint address to numeric format for filtering
+			const mint = new PublicKey(options.mintAddress);
+			const mintBytes = mint.toBytes();
+			const mintBN = new BN(mintBytes);
+			const FIELD_SIZE = new BN(
+				"21888242871839275222246405745257275088548364400416034343698204186575808495617",
+			);
+			const mintAddressNumeric = mintBN.mod(FIELD_SIZE).toString();
+
+			// Get available UTXOs
+			const allUtxos = await getMyUtxos(
+				options.utxoWalletSigned || this.signed!,
+				this.connection,
+				options.onStatus,
+				this.hasher,
+			);
+
+			// Filter for this specific mint's UTXOs
+			const mintUtxos = allUtxos.filter(
+				(utxo) =>
+					utxo.mintAddress === mintAddressNumeric &&
+					utxo.amount.gt(new BN(0)),
+			);
+
+			// Check if UTXOs are unspent
+			const { isUtxoSpent } = await import("../utils/getMyUtxos");
+			const utxoSpentStatuses = await Promise.all(
+				mintUtxos.map((utxo) => isUtxoSpent(this.connection, utxo)),
+			);
+			const unspentUtxos = mintUtxos.filter((_, index) => !utxoSpentStatuses[index]);
+
+			if (unspentUtxos.length < 1) {
+				throw new Error("Need at least 1 unspent UTXO to perform a withdrawal");
+			}
+
+			// Sort by amount descending
+			unspentUtxos.sort((a, b) => b.amount.cmp(a.amount));
+
+			// Plan the batch withdrawals
+			const { planBatchWithdrawals } = await import("../utils/batch-withdraw");
+			const { WITHDRAW_FEE_RATE } = await import("../utils/constants");
+
+			const plan = planBatchWithdrawals(options.amount, WITHDRAW_FEE_RATE, unspentUtxos);
+
+			if (!plan || plan.withdrawals.length === 0) {
+				throw new Error("Unable to plan batch withdrawals with available UTXOs");
+			}
+
+			log(`Planned ${plan.withdrawals.length} withdrawals`);
+			options.onStatus?.(`Planning ${plan.withdrawals.length} withdrawals...`);
+
+			// Submit all transactions
+			options.onStatus?.('Submitting transactions...');
+			const signatures: string[] = [];
+			let successCount = 0;
+			let isPartial = false;
+
+			for (let i = 0; i < plan.withdrawals.length; i++) {
+				const withdrawal = plan.withdrawals[i];
+				const progress = `[${i + 1}/${plan.withdrawals.length}]`;
+
+				try {
+					options.onStatus?.(`Submitting ${i + 1}/${plan.withdrawals.length} transactions...`);
+					log(`${progress} Submitting ${withdrawal.amount} token withdrawal...`);
+
+					// Use the existing withdrawSpl function with specific UTXOs
+					const result = await withdrawSpl(
+						recipientPubkey,
+						withdrawal.amount,
+						options.mintAddress,
+						this.signed!,
+						this.connection,
+						undefined,
+						this.hasher,
+						options.delayMinutes,
+						options.maxRetries ?? 3,
+						0, // retryCount
+						options.utxoWalletSigned,
+						options.utxoWalletSignTransaction,
+						withdrawal.utxos, // Provide specific UTXOs for this withdrawal
+						this.relayerUrl,
+						this.circuitPath,
+					);
+
+					if (result.success && result.signature) {
+						signatures.push(result.signature);
+						successCount++;
+						if (result.isPartial) {
+							isPartial = true;
+						}
+						log(`${progress} Transaction submitted: ${result.signature}`);
+					}
+
+					// Small delay between submissions for backend processing
+					if (i < plan.withdrawals.length - 1) {
+						await new Promise(resolve => setTimeout(resolve, 500));
+					}
+				} catch (err) {
+					error(`${progress} Failed to submit: ${err}`);
+					// Continue with remaining transactions
+				}
+			}
+
+			// Refresh UTXOs
+			options.onStatus?.('Refreshing UTXOs...');
+			await this.refreshUtxos();
+
+			log(`Batch withdrawal complete: ${successCount}/${plan.withdrawals.length} successful`);
+
+			return {
+				success: successCount > 0,
+				signatures,
+				successCount,
+				totalCount: plan.withdrawals.length,
+				isPartial,
+				error: successCount < plan.withdrawals.length ? `Only ${successCount}/${plan.withdrawals.length} withdrawals succeeded` : undefined
+			};
+
+		} catch (err) {
+			const errorMessage = err instanceof Error ? err.message : String(err);
+			log(`Batch withdrawal failed: ${errorMessage}`);
+			return {
+				success: false,
+				signatures: [],
+				successCount: 0,
+				totalCount: 0,
 				error: errorMessage,
 			};
 		}
