@@ -18,7 +18,6 @@ import {
 	DEPOSIT_FEE_RATE,
 	FEE_RECIPIENT,
 	FIELD_SIZE,
-	relayer_API_URL,
 	MERKLE_TREE_DEPTH,
 	PROGRAM_ID,
 	TRANSACT_IX_DISCRIMINATOR,
@@ -43,7 +42,7 @@ import { getMyUtxos, isUtxoSpent } from "./getMyUtxos";
 import { MerkleTree } from "./merkle_tree";
 import { parseProofToBytesArray, parseToBytesArray, prove } from "./prover";
 // Function to query remote tree state from relayer API
-async function queryRemoteTreeState(relayerUrl: string = relayer_API_URL): Promise<{
+async function queryRemoteTreeState(relayerUrl: string): Promise<{
 	root: string;
 	nextIndex: number;
 }> {
@@ -71,7 +70,7 @@ async function queryRemoteTreeState(relayerUrl: string = relayer_API_URL): Promi
 // Function to fetch Merkle proof from API for a given commitment
 async function fetchMerkleProof(
 	commitment: string,
-	relayerUrl: string = relayer_API_URL,
+	relayerUrl: string,
 ): Promise<{ pathElements: string[]; pathIndices: number[]; index: number }> {
 	const response = await fetchWithRetry(
 		`${relayerUrl}/merkle/proof/${commitment}`,
@@ -83,7 +82,7 @@ async function fetchMerkleProof(
 		throw new NetworkError(
 			ErrorCodes.API_FETCH_FAILED,
 			`Failed to fetch Merkle proof: ${response.status} ${response.statusText}`,
-			{ endpoint: `${relayer_API_URL}/merkle/proof/${commitment}`, statusCode: response.status }
+			{ endpoint: `${relayerUrl}/merkle/proof/${commitment}`, statusCode: response.status }
 		);
 	}
 
@@ -138,6 +137,7 @@ export async function deposit(
 	amount_in_sol: number,
 	signed: Signed,
 	connection: Connection,
+	relayerUrl: string, // Relayer URL to use
 	setStatus?: StatusCallback,
 	hasher?: any,
 	signTransaction?: (
@@ -147,7 +147,6 @@ export async function deposit(
 	retryCount: number = 0,
 	utxoWalletSigned?: Signed, // Optional: different wallet's signature for UTXO keypair derivation
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
-	relayerUrl: string = relayer_API_URL, // Relayer URL to use
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 	transactionIndex?: number, // Index for batch deposits to create unique dummy UTXOs
 	forceFreshDeposit?: boolean, // Force fresh deposit path (skip UTXO fetching) for batch deposits
@@ -260,6 +259,7 @@ export async function deposit(
 			const allUtxos = await getMyUtxos(
 				utxoWalletSigned || signed, // Use UTXO wallet if provided, otherwise transaction wallet
 				connection,
+				relayerUrl,
 				setStatus,
 				hasher,
 			);
@@ -768,6 +768,7 @@ export async function deposit(
 					amount_in_sol,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					signTransaction,
@@ -775,7 +776,6 @@ export async function deposit(
 					retryCount,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
-					relayerUrl,
 					circuitPath,
 					transactionIndex,
 					forceFreshDeposit,
@@ -795,6 +795,7 @@ export async function deposit(
 		setStatus?.(`(submitting transaction to relayer...)`);
 		txid = await relayDepositTorelayer(
 			Buffer.from(serializedTx).toString("base64"),
+			relayerUrl,
 		);
 
 		log("Deposit transaction initiated:", txid);
@@ -935,6 +936,7 @@ export async function deposit(
 					amount_in_sol,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					signTransaction,
@@ -942,7 +944,6 @@ export async function deposit(
 					retryCount + 1,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
-					relayerUrl,
 					circuitPath,
 					transactionIndex,
 					forceFreshDeposit,
@@ -978,6 +979,7 @@ export async function deposit(
 				amount_in_sol,
 				signed,
 				connection,
+				relayerUrl,
 				setStatus,
 				hasher,
 				signTransaction,
@@ -985,7 +987,6 @@ export async function deposit(
 				retryCount + 1,
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
-				relayerUrl,
 				circuitPath,
 				transactionIndex,
 				forceFreshDeposit,
@@ -1048,6 +1049,7 @@ export async function checkDepositLimit(connection: Connection) {
 // Function to relay pre-signed deposit transaction to relayer backend
 async function relayDepositTorelayer(
 	signedTransaction: string,
+	relayerUrl: string,
 ): Promise<string> {
 	try {
 		const params = {
@@ -1055,7 +1057,7 @@ async function relayDepositTorelayer(
 		};
 
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/deposit`,
+			`${relayerUrl}/deposit`,
 			{
 				method: "POST",
 				headers: {
@@ -1094,7 +1096,7 @@ async function relayDepositTorelayer(
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`Deposit relay failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayer_API_URL}/deposit`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/deposit`, statusCode: response.status }
 			);
 		}
 

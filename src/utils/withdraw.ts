@@ -19,7 +19,6 @@ import {
 	CIRCUIT_PATH,
 	FEE_RECIPIENT,
 	FIELD_SIZE,
-	relayer_API_URL,
 	MERKLE_TREE_DEPTH,
 	PROGRAM_ID,
 	WITHDRAW_FEE_RATE,
@@ -46,13 +45,13 @@ import { fetchWithRetry } from "./fetchWithRetry";
 // relayer API endpoint
 
 // Function to query remote tree state from relayer API
-async function queryRemoteTreeState(): Promise<{
+async function queryRemoteTreeState(relayerUrl: string): Promise<{
 	root: string;
 	nextIndex: number;
 }> {
 	try {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/merkle/root`,
+			`${relayerUrl}/merkle/root`,
 			undefined,
 			3,
 		);
@@ -60,7 +59,7 @@ async function queryRemoteTreeState(): Promise<{
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle root and nextIndex: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayer_API_URL}/merkle/root`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/merkle/root`, statusCode: response.status }
 			);
 		}
 		const data = (await response.json()) as {
@@ -78,7 +77,7 @@ async function queryRemoteTreeState(): Promise<{
 
 // Function to fetch Merkle proof from API for a given commitment
 // Returns proof along with the root it was generated from to ensure consistency
-async function fetchMerkleProof(commitment: string): Promise<{
+async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise<{
 	pathElements: string[];
 	pathIndices: number[];
 	root: string;
@@ -87,7 +86,7 @@ async function fetchMerkleProof(commitment: string): Promise<{
 }> {
 	try {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/merkle/proof/${commitment}`,
+			`${relayerUrl}/merkle/proof/${commitment}`,
 			undefined,
 			3,
 		);
@@ -95,7 +94,7 @@ async function fetchMerkleProof(commitment: string): Promise<{
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle proof: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayer_API_URL}/merkle/proof/${commitment}`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/merkle/proof/${commitment}`, statusCode: response.status }
 			);
 		}
 		const data = (await response.json()) as {
@@ -140,12 +139,12 @@ function findNullifierPDAs(proof: any) {
 }
 
 // Function to submit withdraw request to relayer backend
-async function submitWithdrawTorelayer(params: any): Promise<string> {
+async function submitWithdrawTorelayer(params: any, relayerUrl: string): Promise<string> {
 	try {
 		log("Submitting withdraw request to relayer backend...");
 
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/withdraw`,
+			`${relayerUrl}/withdraw`,
 			{
 				method: "POST",
 				headers: {
@@ -195,7 +194,7 @@ async function submitWithdrawTorelayer(params: any): Promise<string> {
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`Withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayer_API_URL}/withdraw`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/withdraw`, statusCode: response.status }
 			);
 		}
 
@@ -216,6 +215,7 @@ async function submitWithdrawTorelayer(params: any): Promise<string> {
 // Function to submit delayed withdraw request to relayer backend
 async function submitDelayedWithdrawTorelayer(
 	params: any,
+	relayerUrl: string,
 ): Promise<{ delayedWithdrawalId: number; executeAt: string }> {
 	try {
 		log(
@@ -224,7 +224,7 @@ async function submitDelayedWithdrawTorelayer(
 		);
 
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/withdraw/delayed`,
+			`${relayerUrl}/withdraw/delayed`,
 			{
 				method: "POST",
 				headers: {
@@ -263,7 +263,7 @@ async function submitDelayedWithdrawTorelayer(
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`Delayed withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayer_API_URL}/withdraw/delayed`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/withdraw/delayed`, statusCode: response.status }
 			);
 		}
 
@@ -295,6 +295,7 @@ export async function withdraw(
 	amount_in_sol: number,
 	signed: Signed,
 	connection: Connection,
+	relayerUrl: string, // Relayer URL to use
 	setStatus?: StatusCallback,
 	hasher?: any,
 	delayMinutes?: number,
@@ -303,7 +304,6 @@ export async function withdraw(
 	utxoWalletSigned?: Signed, // Optional: different wallet's signature for UTXO keypair derivation
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
-	relayerUrl: string = relayer_API_URL, // Relayer URL to use
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 ): Promise<{
 	isPartial: boolean;
@@ -378,7 +378,7 @@ export async function withdraw(
 		// Get all relevant balances before transaction
 		// Get current tree state
 		const { root, nextIndex: currentNextIndex } =
-			await queryRemoteTreeState();
+			await queryRemoteTreeState(relayerUrl);
 
 		// Determine which wallet signature to use for UTXO derivation
 		const utxoSignature = utxoWalletSigned ? utxoWalletSigned.signature : signed.signature;
@@ -405,6 +405,7 @@ export async function withdraw(
 			const allUtxos = await getMyUtxos(
 				utxoWalletSigned || signed, // Use UTXO wallet if provided, otherwise transaction wallet
 				connection,
+				relayerUrl,
 				setStatus,
 				hasher,
 			);
@@ -512,6 +513,7 @@ export async function withdraw(
 					amountInSol,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					delayMinutes,
@@ -520,6 +522,7 @@ export async function withdraw(
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
 					withdrawal.utxos, // Provide specific UTXOs for this withdrawal
+					circuitPath,
 				);
 
 				if (result.success && result.signature) {
@@ -653,7 +656,7 @@ export async function withdraw(
 				}
 				// For real UTXOs, fetch the proof from API
 				const commitment = await utxo.getCommitment();
-				return fetchMerkleProof(commitment);
+				return fetchMerkleProof(commitment, relayerUrl);
 			}),
 		);
 
@@ -812,7 +815,7 @@ export async function withdraw(
 
 		// Check if root changed before submitting transaction
 		try {
-			const updatedData = await queryRemoteTreeState();
+			const updatedData = await queryRemoteTreeState(relayerUrl);
 			if (updatedData.root !== root) {
 				warn(
 					"Root changed before transaction submission, retrying with updated state..."
@@ -824,6 +827,7 @@ export async function withdraw(
 					amount_in_sol,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					delayMinutes,
@@ -831,6 +835,8 @@ export async function withdraw(
 					retryCount,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					providedUtxos,
+					circuitPath,
 				);
 			}
 		} catch (err) {
@@ -867,6 +873,7 @@ export async function withdraw(
 			const delayedResult =
 				await submitDelayedWithdrawTorelayer(
 					delayedParams,
+					relayerUrl,
 				);
 
 			// Unlock UTXOs if we locked any
@@ -890,6 +897,7 @@ export async function withdraw(
 			setStatus?.(`(submitting transaction to relayer...)`);
 			const signature = await submitWithdrawTorelayer(
 				withdrawParams,
+				relayerUrl,
 			);
 			log("Transaction signature:", signature);
 
@@ -909,7 +917,7 @@ export async function withdraw(
 				let treeStateMatches = false;
 
 				while (attempts < maxPollingAttempts) {
-					const updatedTreeState = await queryRemoteTreeState();
+					const updatedTreeState = await queryRemoteTreeState(relayerUrl);
 
 					if (updatedTreeState.nextIndex === expectedNextIndex) {
 						log("Withdrawal complete. Change UTXO added to Merkle tree.");
@@ -931,7 +939,7 @@ export async function withdraw(
 				}
 
 				if (!treeStateMatches) {
-					const finalTreeState = await queryRemoteTreeState();
+					const finalTreeState = await queryRemoteTreeState(relayerUrl);
 					warn(`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}. Change UTXO may not be immediately available.`);
 				}
 			} catch (err) {
@@ -977,6 +985,7 @@ export async function withdraw(
 					amount_in_sol,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					delayMinutes,
@@ -984,6 +993,8 @@ export async function withdraw(
 					retryCount + 1,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					providedUtxos,
+					circuitPath,
 				);
 			}
 		}
@@ -1033,6 +1044,7 @@ export async function withdraw(
 				amount_in_sol,
 				signed,
 				connection,
+				relayerUrl,
 				setStatus,
 				hasher,
 				delayMinutes,
@@ -1040,6 +1052,8 @@ export async function withdraw(
 				retryCount + 1,
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
+				providedUtxos,
+				circuitPath,
 			);
 		}
 

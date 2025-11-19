@@ -32,7 +32,7 @@ import { getMyUtxos, clearUtxoCache, refreshUtxos } from "../utils/getMyUtxos";
 import { planBatchDeposits, planBatchSplDeposits } from "../utils/batch-deposit";
 import { ErrorCodes, ConfigurationError } from "../errors";
 import { fetchWithRetry } from "../utils/fetchWithRetry";
-import { relayer_API_URL, CIRCUIT_PATH } from "../utils/constants";
+import { CIRCUIT_PATH } from "../utils/constants";
 
 /**
  * Cloak SDK - Privacy-preserving SOL and SPL token transfers on Solana
@@ -106,8 +106,7 @@ export class CloakSDK {
 		this.connection = config.connection;
 		this.signer = config.signer;
 		this.publicKey = config.signer.publicKey;
-		this.relayerUrl =
-			config.relayerUrl || relayer_API_URL;
+		this.relayerUrl = config.relayerUrl;
 		this.programId =
 			config.programId ||
 			"8wbkRNdUfjsL3hJotuHX9innLPAdChJ5qGYG41Htpmuk";
@@ -189,14 +188,14 @@ export class CloakSDK {
 				options.amount,
 				this.signed!,
 				this.connection,
+				this.relayerUrl,
 				options.onStatus,
 				this.hasher,
 				this.signTransaction.bind(this),
 				options.maxRetries ?? 3,
-				0, // retryCount
+				0, // retryCount,
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
-				this.relayerUrl,
 				this.circuitPath,
 			);
 
@@ -253,6 +252,7 @@ export class CloakSDK {
 				options.mintAddress,
 				this.signed!,
 				this.connection,
+				this.relayerUrl,
 				options.onStatus,
 				this.hasher,
 				this.signTransaction.bind(this),
@@ -260,7 +260,6 @@ export class CloakSDK {
 				0, // retryCount
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
-				this.relayerUrl,
 				this.circuitPath,
 			);
 
@@ -559,6 +558,7 @@ export class CloakSDK {
 				amount,
 				utxoWalletSigned || this.signed!,
 				this.connection,
+				this.relayerUrl,
 				onStatus,
 				this.hasher,
 				captureTransaction, // Intercept the transaction
@@ -566,7 +566,6 @@ export class CloakSDK {
 				0, // retryCount
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
-				this.relayerUrl,
 				this.circuitPath,
 				transactionIndex, // Pass transaction index for unique dummy UTXOs in batch deposits
 				true, // forceFreshDeposit: Skip UTXO fetching for batch deposits to avoid conflicts
@@ -618,6 +617,7 @@ export class CloakSDK {
 				mintAddress,
 				utxoWalletSigned || this.signed!,
 				this.connection,
+				this.relayerUrl,
 				onStatus,
 				this.hasher,
 				captureTransaction, // Intercept the transaction
@@ -625,7 +625,6 @@ export class CloakSDK {
 				0, // retryCount
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
-				this.relayerUrl,
 				this.circuitPath
 			);
 		} catch (err) {
@@ -771,6 +770,7 @@ export class CloakSDK {
 				options.amount,
 				this.signed!,
 				this.connection,
+				this.relayerUrl,
 				options.onStatus,
 				this.hasher,
 				options.delayMinutes,
@@ -779,7 +779,6 @@ export class CloakSDK {
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
-				this.relayerUrl,
 				this.circuitPath,
 			);
 
@@ -860,6 +859,7 @@ export class CloakSDK {
 				options.mintAddress,
 				this.signed!,
 				this.connection,
+				this.relayerUrl,
 				options.onStatus,
 				this.hasher,
 				options.delayMinutes,
@@ -868,7 +868,6 @@ export class CloakSDK {
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
-				this.relayerUrl,
 				this.circuitPath,
 			);
 
@@ -1061,6 +1060,7 @@ export class CloakSDK {
 			const utxos = await getMyUtxos(
 				utxoWalletSigned || this.signed!,
 				this.connection,
+				this.relayerUrl,
 				undefined,
 				this.hasher,
 				forceRefresh, // Pass forceRefresh to getMyUtxos
@@ -1161,6 +1161,7 @@ export class CloakSDK {
 			const utxos = await getMyUtxos(
 				utxoWalletSigned || this.signed!,
 				this.connection,
+				this.relayerUrl,
 				undefined,
 				this.hasher,
 				forceRefresh, // Pass forceRefresh to getMyUtxos
@@ -1255,6 +1256,7 @@ export class CloakSDK {
 		return await refreshUtxos(
 			this.signed,
 			this.connection,
+			this.relayerUrl,
 			undefined,
 			this.hasher,
 		);

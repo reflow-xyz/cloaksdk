@@ -71,7 +71,9 @@ async function main() {
 		connection,
 		signer: new Keypair(),
 		verbose: false, // ENABLE VERBOSE LOGGING TO DEBUG
-		relayerUrl: process.env.RELAYER_API_URL,
+		relayerUrl:
+			process.env.RELAYER_API_URL ||
+			"https://dev-api.cloaklabs.dev",
 	});
 
 	console.log("[INFO] Initializing SDK...");

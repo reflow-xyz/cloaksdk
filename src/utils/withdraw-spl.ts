@@ -13,7 +13,6 @@ import {
 	ALT_ADDRESS,
 	CIRCUIT_PATH,
 	FEE_RECIPIENT,
-	relayer_API_URL,
 	MERKLE_TREE_DEPTH,
 	PROGRAM_ID,
 	TRANSACT_SPL_IX_DISCRIMINATOR,
@@ -42,13 +41,13 @@ import { fetchWithRetry } from "./fetchWithRetry";
 /**
  * Query remote tree state from relayer API
  */
-async function queryRemoteTreeState(): Promise<{
+async function queryRemoteTreeState(relayerUrl: string): Promise<{
 	root: string;
 	nextIndex: number;
 }> {
 	try {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/merkle/root`,
+			`${relayerUrl}/merkle/root`,
 			undefined,
 			3,
 		);
@@ -56,7 +55,7 @@ async function queryRemoteTreeState(): Promise<{
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle root and nextIndex: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayer_API_URL}/merkle/root`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/merkle/root`, statusCode: response.status }
 			);
 		}
 		const data = (await response.json()) as {
@@ -75,7 +74,7 @@ async function queryRemoteTreeState(): Promise<{
 /**
  * Fetch Merkle proof from API for a given commitment
  */
-async function fetchMerkleProof(commitment: string): Promise<{
+async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise<{
 	pathElements: string[];
 	pathIndices: number[];
 	index: number;
@@ -84,7 +83,7 @@ async function fetchMerkleProof(commitment: string): Promise<{
 }> {
 	try {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/merkle/proof/${commitment}`,
+			`${relayerUrl}/merkle/proof/${commitment}`,
 			undefined,
 			3,
 		);
@@ -92,7 +91,7 @@ async function fetchMerkleProof(commitment: string): Promise<{
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle proof: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayer_API_URL}/merkle/proof/${commitment}`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/merkle/proof/${commitment}`, statusCode: response.status }
 			);
 		}
 		const data = (await response.json()) as {
@@ -141,7 +140,7 @@ function findNullifierPDAs(proof: any) {
 /**
  * Submit SPL withdraw request to relayer backend
  */
-async function submitSplWithdrawTorelayer(params: any): Promise<string> {
+async function submitSplWithdrawTorelayer(params: any, relayerUrl: string): Promise<string> {
 	try {
 		log(
 			"Submitting SPL withdraw request to relayer backend...",
@@ -149,7 +148,7 @@ async function submitSplWithdrawTorelayer(params: any): Promise<string> {
 		);
 
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/withdraw/spl`,
+			`${relayerUrl}/withdraw/spl`,
 			{
 				method: "POST",
 				headers: {
@@ -192,7 +191,7 @@ async function submitSplWithdrawTorelayer(params: any): Promise<string> {
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`SPL withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayer_API_URL}/withdraw/spl`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/withdraw/spl`, statusCode: response.status }
 			);
 		}
 
@@ -218,6 +217,7 @@ async function submitSplWithdrawTorelayer(params: any): Promise<string> {
  */
 async function submitDelayedSplWithdrawTorelayer(
 	params: any,
+	relayerUrl: string,
 ): Promise<{ delayedWithdrawalId: number; executeAt: string }> {
 	try {
 		log(
@@ -226,7 +226,7 @@ async function submitDelayedSplWithdrawTorelayer(
 		);
 
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/withdraw/spl/delayed`,
+			`${relayerUrl}/withdraw/spl/delayed`,
 			{
 				method: "POST",
 				headers: {
@@ -265,7 +265,7 @@ async function submitDelayedSplWithdrawTorelayer(
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`Delayed SPL withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayer_API_URL}/withdraw/spl/delayed`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/withdraw/spl/delayed`, statusCode: response.status }
 			);
 		}
 
@@ -311,6 +311,7 @@ export async function withdrawSpl(
 	mintAddress: string,
 	signed: Signed,
 	connection: Connection,
+	relayerUrl: string, // Relayer URL to use
 	setStatus?: StatusCallback,
 	hasher?: any,
 	delayMinutes?: number,
@@ -319,7 +320,6 @@ export async function withdrawSpl(
 	utxoWalletSigned?: Signed,
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
-	relayerUrl: string = relayer_API_URL, // Relayer URL to use
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 ): Promise<{
 	isPartial: boolean;
@@ -387,7 +387,7 @@ export async function withdrawSpl(
 		const globalConfigAccount = getGlobalConfigPDA();
 
 		// Get relayer public key
-		const relayerPubkey = await getRelayerPublicKey();
+		const relayerPubkey = await getRelayerPublicKey(relayerUrl);
 
 		// Derive all required token accounts
 		const tokenAccounts = await deriveTokenAccounts(
@@ -400,7 +400,7 @@ export async function withdrawSpl(
 
 		// Get tree state
 		const { root, nextIndex: currentNextIndex } =
-			await queryRemoteTreeState();
+			await queryRemoteTreeState(relayerUrl);
 
 		// Generate UTXO keypair from the UTXO wallet
 		const utxoPrivateKey = utxoEncryptionService.deriveUtxoPrivateKey();
@@ -418,6 +418,7 @@ export async function withdrawSpl(
 			const allUtxos = await getMyUtxos(
 				utxoWalletSigned || signed,
 				connection,
+				relayerUrl,
 				setStatus,
 				hasher,
 			);
@@ -501,6 +502,7 @@ export async function withdrawSpl(
 					mintAddress,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					delayMinutes,
@@ -509,6 +511,7 @@ export async function withdrawSpl(
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
 					withdrawal.utxos, // Provide specific UTXOs for this withdrawal
+					circuitPath,
 				);
 
 				if (result.success && result.signature) {
@@ -600,7 +603,7 @@ export async function withdrawSpl(
 					};
 				}
 				const commitment = await utxo.getCommitment();
-				return fetchMerkleProof(commitment);
+				return fetchMerkleProof(commitment, relayerUrl);
 			}),
 		);
 
@@ -759,7 +762,7 @@ export async function withdrawSpl(
 
 		// Check if root changed before submitting transaction
 		try {
-			const updatedData = await queryRemoteTreeState();
+			const updatedData = await queryRemoteTreeState(relayerUrl);
 			if (updatedData.root !== root) {
 				warn(
 					"Root changed before transaction submission, retrying with updated state..."
@@ -772,6 +775,7 @@ export async function withdrawSpl(
 					mintAddress,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					delayMinutes,
@@ -779,6 +783,8 @@ export async function withdrawSpl(
 					retryCount,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					providedUtxos,
+					circuitPath,
 				);
 			}
 		} catch (err) {
@@ -805,6 +811,7 @@ export async function withdrawSpl(
 			const delayedResult =
 				await submitDelayedSplWithdrawTorelayer(
 					delayedParams,
+					relayerUrl,
 				);
 
 			return {
@@ -819,6 +826,7 @@ export async function withdrawSpl(
 			setStatus?.(`(submitting transaction to relayer...)`);
 			const signature = await submitSplWithdrawTorelayer(
 				withdrawParams,
+				relayerUrl,
 			);
 			log("Transaction signature:", signature);
 
@@ -838,7 +846,7 @@ export async function withdrawSpl(
 				let treeStateMatches = false;
 
 				while (attempts < maxPollingAttempts) {
-					const updatedTreeState = await queryRemoteTreeState();
+					const updatedTreeState = await queryRemoteTreeState(relayerUrl);
 
 					if (updatedTreeState.nextIndex === expectedNextIndex) {
 						log("Withdrawal complete. Change UTXO added to Merkle tree.");
@@ -860,7 +868,7 @@ export async function withdrawSpl(
 				}
 
 				if (!treeStateMatches) {
-					const finalTreeState = await queryRemoteTreeState();
+					const finalTreeState = await queryRemoteTreeState(relayerUrl);
 					warn(`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}. Change UTXO may not be immediately available.`);
 				}
 			} catch (err) {
@@ -893,6 +901,7 @@ export async function withdrawSpl(
 					mintAddress,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					delayMinutes,
@@ -900,6 +909,8 @@ export async function withdrawSpl(
 					retryCount + 1,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					providedUtxos,
+					circuitPath,
 				);
 			}
 		}
@@ -947,6 +958,7 @@ export async function withdrawSpl(
 				mintAddress,
 				signed,
 				connection,
+				relayerUrl,
 				setStatus,
 				hasher,
 				delayMinutes,
@@ -954,6 +966,8 @@ export async function withdrawSpl(
 				retryCount + 1,
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
+				providedUtxos,
+				circuitPath,
 			);
 		}
 

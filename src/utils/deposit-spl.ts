@@ -21,7 +21,6 @@ import {
 	DEPOSIT_FEE_RATE,
 	FEE_RECIPIENT,
 	FIELD_SIZE,
-	relayer_API_URL,
 	MERKLE_TREE_DEPTH,
 	PROGRAM_ID,
 	TRANSACT_SPL_IX_DISCRIMINATOR,
@@ -49,12 +48,12 @@ import { ErrorCodes, ValidationError, NetworkError, TransactionError, Configurat
 /**
  * Query remote tree state from relayer API
  */
-async function queryRemoteTreeState(): Promise<{
+async function queryRemoteTreeState(relayerUrl: string): Promise<{
 	root: string;
 	nextIndex: number;
 }> {
 	const response = await fetchWithRetry(
-		`${relayer_API_URL}/merkle/root`,
+		`${relayerUrl}/merkle/root`,
 		undefined,
 		3,
 	);
@@ -63,7 +62,7 @@ async function queryRemoteTreeState(): Promise<{
 		throw new NetworkError(
 			ErrorCodes.API_FETCH_FAILED,
 			`Failed to fetch Merkle root and nextIndex: ${response.status} ${response.statusText}`,
-			{ endpoint: `${relayer_API_URL}/merkle/root`, statusCode: response.status }
+			{ endpoint: `${relayerUrl}/merkle/root`, statusCode: response.status }
 		);
 	}
 
@@ -79,10 +78,11 @@ async function queryRemoteTreeState(): Promise<{
  */
 async function fetchMerkleProof(
 	commitment: string,
+	relayerUrl: string,
 ): Promise<{ pathElements: string[]; pathIndices: number[] }> {
 	try {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/merkle/proof/${commitment}`,
+			`${relayerUrl}/merkle/proof/${commitment}`,
 			undefined,
 			3,
 		);
@@ -90,7 +90,7 @@ async function fetchMerkleProof(
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle proof: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayer_API_URL}/merkle/proof/${commitment}`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/merkle/proof/${commitment}`, statusCode: response.status }
 			);
 		}
 		const data = (await response.json()) as {
@@ -156,10 +156,11 @@ function findNullifierPDAs(proof: any) {
  */
 async function relaySplDepositTorelayer(
 	signedTransaction: string,
+	relayerUrl: string,
 ): Promise<string> {
 	try {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/deposit/spl`,
+			`${relayerUrl}/deposit/spl`,
 			{
 				method: "POST",
 				headers: {
@@ -198,7 +199,7 @@ async function relaySplDepositTorelayer(
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`SPL deposit relay failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayer_API_URL}/deposit/spl`, statusCode: response.status }
+				{ endpoint: `${relayerUrl}/deposit/spl`, statusCode: response.status }
 			);
 		}
 
@@ -233,6 +234,7 @@ export async function depositSpl(
 	mintAddress: string,
 	signed: Signed,
 	connection: Connection,
+	relayerUrl: string, // Relayer URL to use
 	setStatus?: StatusCallback,
 	hasher?: any,
 	signTransaction?: (
@@ -242,7 +244,6 @@ export async function depositSpl(
 	retryCount: number = 0,
 	utxoWalletSigned?: Signed,
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
-	relayerUrl: string = relayer_API_URL, // Relayer URL to use
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 ): Promise<{ success: boolean; signature?: string }> {
 	if (retryCount > 0) {
@@ -372,7 +373,7 @@ export async function depositSpl(
 		let currentNextIndex: number;
 
 		try {
-			const data = await queryRemoteTreeState();
+			const data = await queryRemoteTreeState(relayerUrl);
 			root = data.root;
 			currentNextIndex = data.nextIndex;
 		} catch (err) {
@@ -392,6 +393,7 @@ export async function depositSpl(
 		const allUtxos = await getMyUtxos(
 			utxoWalletSigned || signed,
 			connection,
+			relayerUrl,
 			setStatus,
 			hasher,
 		);
@@ -488,13 +490,14 @@ export async function depositSpl(
 			// Fetch both Merkle proofs in parallel
 			const [firstUtxoMerkleProof, secondUtxoMerkleProof] =
 				await Promise.all([
-					fetchMerkleProof(firstUtxoCommitment),
+					fetchMerkleProof(firstUtxoCommitment, relayerUrl),
 					secondUtxoIsReal
 						? secondUtxoCommitmentPromise.then(
 								(commitment) =>
 									commitment
 										? fetchMerkleProof(
 												commitment,
+												relayerUrl,
 											)
 										: null,
 							)
@@ -789,7 +792,7 @@ export async function depositSpl(
 
 		// Check if root changed before submitting transaction
 		try {
-			const updatedData = await queryRemoteTreeState();
+			const updatedData = await queryRemoteTreeState(relayerUrl);
 			if (updatedData.root !== root) {
 
 				// Recursively call depositSpl again with updated state
@@ -798,6 +801,7 @@ export async function depositSpl(
 					mintAddress,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					signTransaction,
@@ -805,6 +809,7 @@ export async function depositSpl(
 					retryCount,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					circuitPath,
 				);
 			}
 		} catch (err) {
@@ -819,6 +824,7 @@ export async function depositSpl(
 		setStatus?.(`(submitting transaction to relayer...)`);
 		const txid = await relaySplDepositTorelayer(
 			Buffer.from(serializedTx).toString("base64"),
+			relayerUrl,
 		);
 
 		// Confirm transaction
@@ -886,6 +892,7 @@ export async function depositSpl(
 					mintAddress,
 					signed,
 					connection,
+					relayerUrl,
 					setStatus,
 					hasher,
 					signTransaction,
@@ -893,6 +900,7 @@ export async function depositSpl(
 					retryCount + 1,
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
+					circuitPath,
 				);
 			}
 		}
@@ -926,6 +934,7 @@ export async function depositSpl(
 				mintAddress,
 				signed,
 				connection,
+				relayerUrl,
 				setStatus,
 				hasher,
 				signTransaction,
@@ -933,6 +942,7 @@ export async function depositSpl(
 				retryCount + 1,
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
+				circuitPath,
 			);
 		}
 

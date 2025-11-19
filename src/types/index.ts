@@ -37,7 +37,7 @@ export interface CloakSDKConfig {
    */
   signer: TransactionSigner | Keypair;
   /** relayer API URL for relaying transactions */
-  relayerUrl?: string;
+  relayerUrl: string;
   /** Program ID of the Cloak privacy protocol */
   programId?: string;
   /** Enable verbose logging */

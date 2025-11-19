@@ -5,7 +5,7 @@ import {
 	TOKEN_PROGRAM_ID,
 	ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { relayer_API_URL, PROGRAM_ID } from "./constants";
+import { PROGRAM_ID } from "./constants";
 import { fetchWithRetry } from "./fetchWithRetry";
 
 /**
@@ -13,10 +13,10 @@ import { fetchWithRetry } from "./fetchWithRetry";
  */
 
 // Get relayer public key from the backend API
-export async function getRelayerPublicKey(): Promise<PublicKey> {
+export async function getRelayerPublicKey(relayerUrl: string): Promise<PublicKey> {
 	try {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/relayer`,
+			`${relayerUrl}/relayer`,
 			undefined,
 			3,
 		);

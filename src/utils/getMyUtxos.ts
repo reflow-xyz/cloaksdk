@@ -9,7 +9,6 @@ import { EncryptionService } from "./encryption";
 import * as ffjavascript from "ffjavascript";
 import {
 	FETCH_UTXOS_GROUP_SIZE,
-	relayer_API_URL,
 	PROGRAM_ID,
 } from "./constants";
 import { fetchWithRetry } from "./fetchWithRetry";
@@ -66,11 +65,12 @@ export function clearUtxoCache() {
 export async function refreshUtxos(
 	signed: Signed,
 	connection: Connection,
+	relayerUrl: string,
 	setStatus?: any,
 	hasher?: any,
 ): Promise<Utxo[]> {
 	clearUtxoCache();
-	return getMyUtxos(signed, connection, setStatus, hasher, true);
+	return getMyUtxos(signed, connection, relayerUrl, setStatus, hasher, true);
 }
 
 let getMyUtxosPromise: Promise<FetchedUtxoBatch> | null = null;
@@ -85,7 +85,8 @@ async function decryptCachedOutputs(
 	encryptedOutputs: string[],
 	signed: Signed,
 	connection: Connection,
-	hasher: LightWasm
+	hasher: LightWasm,
+	relayerUrl: string,
 ): Promise<Utxo[]> {
 	const lightWasm = hasher;
 
@@ -163,7 +164,7 @@ async function decryptCachedOutputs(
 			try {
 				const commitment = await utxo.getCommitment();
 				const merkleProofResponse = await fetchWithRetry(
-					`${relayer_API_URL}/merkle/proof/${commitment}`,
+					`${relayerUrl}/merkle/proof/${commitment}`,
 					undefined,
 					3,
 				);
@@ -223,6 +224,7 @@ async function decryptCachedOutputs(
 export async function getMyUtxos(
 	signed: Signed,
 	connection: Connection,
+	relayerUrl: string,
 	setStatus?: StatusCallback,
 	hasher?: LightWasm,
 	forceRefresh: boolean = false,
@@ -233,11 +235,14 @@ export async function getMyUtxos(
 	if (!hasher) {
 		throw new Error("getMyUtxos:no hasher");
 	}
+	if (!relayerUrl) {
+		throw new Error("getMyUtxos:no relayerUrl");
+	}
 
 	// Helper to query tree state
 	async function queryRemoteTreeState() {
 		const response = await fetchWithRetry(
-			`${relayer_API_URL}/merkle/root`,
+			`${relayerUrl}/merkle/root`,
 			undefined,
 			3,
 		);
@@ -264,7 +269,7 @@ export async function getMyUtxos(
 			log(`[SDK] Fetching ${newUtxoCount} new UTXOs (${utxoCache.lastFetchedIndex} -> ${totalUtxosInTree})`);
 			setStatus?.(`(loading ${newUtxoCount} new utxos...)`);
 
-			const url = `${relayer_API_URL}/utxos/range?start=${utxoCache.lastFetchedIndex}&end=${totalUtxosInTree}`;
+			const url = `${relayerUrl}/utxos/range?start=${utxoCache.lastFetchedIndex}&end=${totalUtxosInTree}`;
 			const newBatch = await fetchUserUtxos(signed, connection, url, setStatus, hasher);
 
 			log(`[SDK] Fetched ${newBatch.encryptedOutputs.length} new encrypted outputs`);
@@ -288,7 +293,8 @@ export async function getMyUtxos(
 			utxoCache.encryptedOutputs,
 			signed,
 			connection,
-			hasher
+			hasher,
+			relayerUrl,
 		);
 
 		log(`[SDK DEBUG CACHE] decryptCachedOutputs returned ${decryptedUtxos.length} valid UTXOs`);
@@ -316,7 +322,7 @@ export async function getMyUtxos(
 
 			for (let offset = 0; offset < totalUtxos; offset += FETCH_UTXOS_GROUP_SIZE) {
 				const end = Math.min(offset + FETCH_UTXOS_GROUP_SIZE, totalUtxos);
-				const url = `${relayer_API_URL}/utxos/range?start=${offset}&end=${end}`;
+				const url = `${relayerUrl}/utxos/range?start=${offset}&end=${end}`;
 				batchPromises.push(
 					fetchUserUtxos(signed, connection, url, statusCallback, hasher)
 				);
@@ -355,7 +361,7 @@ export async function getMyUtxos(
 						try {
 							const commitment = await utxo.getCommitment();
 							const merkleProofResponse = await fetchWithRetry(
-								`${relayer_API_URL}/merkle/proof/${commitment}`,
+								`${relayerUrl}/merkle/proof/${commitment}`,
 								undefined,
 								3,
 							);
@@ -466,7 +472,7 @@ export async function getMyUtxos(
 
 // 	while (fetchOffset < endIndex) {
 // 		const fetchEnd = Math.min(fetchOffset + FETCH_UTXOS_GROUP_SIZE, endIndex);
-// 		const url = `${relayer_API_URL}/utxos/range?start=${fetchOffset}&end=${fetchEnd}`;
+// 		const url = `${relayerUrl}/utxos/range?start=${fetchOffset}&end=${fetchEnd}`;
 
 // 		const fetched = await fetchUserUtxos(
 // 			signed,
@@ -483,7 +489,7 @@ export async function getMyUtxos(
 // 				try {
 // 					const commitment = await utxo.getCommitment();
 // 					const merkleProofResponse = await fetchWithRetry(
-// 						`${relayer_API_URL}/merkle/proof/${commitment}`,
+// 						`${relayerUrl}/merkle/proof/${commitment}`,
 // 						undefined,
 // 						3,
 // 					);
@@ -511,7 +517,7 @@ export async function getMyUtxos(
  * Fetch and decrypt UTXOs from apiUrl
  * @param signed The user's signature
  * @param connection Solana connection to fetch on-chain commitment accounts
- * @param apiUrl Optional custom API URL, defaults to relayer_API_URL/utxos
+ * @param apiUrl API URL to fetch UTXOs from
  * @returns Array of decrypted UTXOs that belong to the user
  */
 async function fetchUserUtxos(
@@ -544,8 +550,7 @@ async function fetchUserUtxos(
 		const utxoPrivateKey = encryptionService.deriveUtxoPrivateKey();
 		const utxoKeypair = new UtxoKeypair(utxoPrivateKey, lightWasm);
 
-		// Use default API URL if not provided
-		const url = apiUrl || `${relayer_API_URL}/utxos`;
+		const url = apiUrl;
 
 		// Fetch all UTXOs from the API
 		let encryptedOutputs: string[] = [];
@@ -764,6 +769,7 @@ async function batchCheckUtxosSpent(
 export async function isUtxoSpent(
 	connection: Connection,
 	utxo: Utxo,
+	relayerUrl?: string,
 ): Promise<boolean> {
 	try {
 		// Get the nullifier for this UTXO
@@ -828,7 +834,7 @@ export async function isUtxoSpent(
 
 			// Fallback to relayer API if on-chain check fails
 			const response = await axios.post(
-				`${relayer_API_URL}/nullifiers/check`,
+				`${relayerUrl}/nullifiers/check`,
 				{
 					nullifiers: [nullifierHex],
 				},

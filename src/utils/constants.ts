@@ -58,9 +58,6 @@ export const ALT_ADDRESS = new PublicKey(
 		: "Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9",
 );
 
-export const relayer_API_URL =
-	process.env.relayer_API_URL || "https://api.cloaklabs.dev";
-
 // ===== SPL Token Support =====
 
 export interface SupportedToken {
