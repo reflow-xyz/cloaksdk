@@ -42,9 +42,9 @@ export const CIRCUIT_PATH =
 
 export const MERKLE_TREE_DEPTH = 26;
 
-export const DEPOSIT_FEE_RATE = 0.3; // 0% - deposits are free
+export const DEPOSIT_FEE_RATE = 0; // 0% - deposits are free
 
-export const WITHDRAW_FEE_RATE = 0.3; // 0.25%
+export const WITHDRAW_FEE_RATE = 0; // 0.25%
 
 // export const REFERRAL_DISCOUNT = 0.005; // 0.5% discount
 

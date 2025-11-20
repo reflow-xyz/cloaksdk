@@ -1,6 +1,6 @@
 {
-  "name": "@cloak-labs/sdk",
-  "version": "1.0.4",
+  "name": "@cloak-dev/sdk",
+  "version": "1.0.5",
   "description": "Cloak Privacy Protocol SDK for Solana - Deposit and withdraw SOL/SPL tokens with zero-knowledge proofs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

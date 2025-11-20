@@ -128,14 +128,18 @@ export function planBatchWithdrawals(
 export function previewBatchWithdrawal(
 	requestedAmount: number, // in base units
 	availableUtxos: Utxo[],
-	feeRate: number = 0.3,
+	feeRate: number = 0,
 ): {
 	numTransactions: number;
 	totalAmount: number;
 	totalFees: number;
 	breakdown: { txNum: number; amount: number; numUtxos: number }[];
 } | null {
-	const plan = planBatchWithdrawals(requestedAmount, feeRate, availableUtxos);
+	const plan = planBatchWithdrawals(
+		requestedAmount,
+		feeRate,
+		availableUtxos,
+	);
 
 	if (!plan) return null;
 
