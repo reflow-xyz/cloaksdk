@@ -62,7 +62,7 @@ async function main() {
 	// Setup connection
 	const connection = new Connection(
 		process.env.RPC_URL ||
-			"https://devnet.helius-rpc.com/?api-key=",
+			"https://mainnet.helius-rpc.com/?api-key=17cb0ad2-833f-4962-bfbc-bfba9b2d23c1",
 		"confirmed",
 	);
 
@@ -71,9 +71,7 @@ async function main() {
 		connection,
 		signer: new Keypair(),
 		verbose: false, // ENABLE VERBOSE LOGGING TO DEBUG
-		relayerUrl:
-			process.env.RELAYER_API_URL ||
-			"https://dev-api.cloaklabs.dev",
+		relayerUrl: "https://api.cloaklabs.dev",
 	});
 
 	console.log("[INFO] Initializing SDK...");
