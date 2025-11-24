@@ -33,6 +33,7 @@ import { planBatchDeposits, planBatchSplDeposits } from "../utils/batch-deposit"
 import { ErrorCodes, ConfigurationError } from "../errors";
 import { fetchWithRetry } from "../utils/fetchWithRetry";
 import { CIRCUIT_PATH } from "../utils/constants";
+import { mintIdMatches } from "../utils/spl-mint-id";
 
 /**
  * Cloak SDK - Privacy-preserving SOL and SPL token transfers on Solana
@@ -1147,17 +1148,6 @@ export class CloakSDK {
 			// Check if tree state has changed before fetching UTXOs
 			await this.checkAndRefreshTreeState();
 
-			// Convert mint address to numeric format
-			const mint = new PublicKey(mintAddress);
-			const mintBytes = mint.toBytes();
-			const mintBN = new BN(mintBytes);
-			const FIELD_SIZE = new BN(
-				"21888242871839275222246405745257275088548364400416034343698204186575808495617",
-			);
-			const mintAddressNumeric = mintBN
-				.mod(FIELD_SIZE)
-				.toString();
-
 			const utxos = await getMyUtxos(
 				utxoWalletSigned || this.signed!,
 				this.connection,
@@ -1167,11 +1157,10 @@ export class CloakSDK {
 				forceRefresh, // Pass forceRefresh to getMyUtxos
 			);
 
-			// Filter for this specific mint
+			// Filter for this specific mint using backwards-compatible matching
 			const tokenUtxos = utxos.filter(
 				(utxo) =>
-					utxo.mintAddress ===
-						mintAddressNumeric &&
+					mintIdMatches(utxo.mintAddress, mintAddress) &&
 					utxo.amount.gt(new BN(0)),
 			);
 
@@ -1207,7 +1196,7 @@ export class CloakSDK {
 			return {
 				total,
 				count: tokenUtxos.length,
-				mintAddress: mintAddressNumeric,
+				mintAddress: mintAddress,
 			};
 		} catch (err) {
 			throw new ConfigurationError(
