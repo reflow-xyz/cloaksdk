@@ -31,6 +31,7 @@
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.2",
     "axios": "^1.9.0",
+    "blakejs": "^1.2.1",
     "bn.js": "^5.2.2",
     "borsh": "^2.0.0",
     "buffer": "^6.0.3",
@@ -42,6 +43,7 @@
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.0",
+    "@types/bs58": "^4.0.4",
     "@types/node": "^20.19.24",
     "dotenv": "^17.2.3",
     "typescript": "^5.0.0"

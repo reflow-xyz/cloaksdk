@@ -44,6 +44,7 @@ import {
 	parseTransactionError,
 } from "./validation";
 import { ErrorCodes, ValidationError, NetworkError, TransactionError, ConfigurationError } from '../errors';
+import { getSplMintId, mintIdMatches } from './spl-mint-id';
 
 /**
  * Query remote tree state from relayer API
@@ -272,9 +273,8 @@ export async function depositSpl(
 		try {
 			mint = new PublicKey(mintAddress);
 
-			const mintBytes = mint.toBytes();
-			const mintBN = new BN(mintBytes);
-			mintAddressNumeric = mintBN.mod(FIELD_SIZE).toString();
+			// Use BLAKE2b-128 for compact mint ID (~39 digits instead of ~76)
+			mintAddressNumeric = getSplMintId(mintAddress);
 		} catch (err: any) {
 			error("Failed to convert mint address:", err);
 			throw new ValidationError(
@@ -399,9 +399,10 @@ export async function depositSpl(
 		);
 
 		// Filter for this specific mint and non-zero amounts
+		// Use backwards-compatible matching to support both old and new mint ID formats
 		const mintUtxos = allUtxos.filter(
 			(utxo) =>
-				utxo.mintAddress === mintAddressNumeric &&
+				mintIdMatches(utxo.mintAddress, mintAddress) &&
 				utxo.amount.gt(new BN(0)),
 		);
 

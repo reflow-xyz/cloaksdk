@@ -70,7 +70,7 @@ async function main() {
 	const sdk = new CloakSDK({
 		connection,
 		signer: new Keypair(),
-		verbose: false, // ENABLE VERBOSE LOGGING TO DEBUG
+		verbose: true, // ENABLE VERBOSE LOGGING TO DEBUG
 		relayerUrl: "https://api.cloaklabs.dev",
 	});
 
@@ -79,156 +79,156 @@ async function main() {
 	let signature = await generateUtxoWalletSignature(keypair);
 	console.log("[INFO] SDK initialized successfully\n");
 
-	// ============================================
-	// SOL TESTS
-	// ============================================
-	console.log("[INFO] Starting SOL transfer test\n");
+	// // ============================================
+	// // SOL TESTS
+	// // ============================================
+	// console.log("[INFO] Starting SOL transfer test\n");
 
-	// Check initial SOL balance (force refresh to get fresh data)
-	console.log("[INFO] Checking initial SOL balance...");
-	const initialSolBalance = await sdk.getSolBalance(signature, true); // Force refresh
-	console.log(
-		`[INFO] Initial SOL balance: ${
-			initialSolBalance.total.toNumber() / 1e9
-		} SOL (${initialSolBalance.count} UTXOs)\n`,
-	);
+	// // Check initial SOL balance (force refresh to get fresh data)
+	// console.log("[INFO] Checking initial SOL balance...");
+	// const initialSolBalance = await sdk.getSolBalance(signature, true); // Force refresh
+	// console.log(
+	// 	`[INFO] Initial SOL balance: ${
+	// 		initialSolBalance.total.toNumber() / 1e9
+	// 	} SOL (${initialSolBalance.count} UTXOs)\n`,
+	// );
 
-	// Deposit SOL
-	const solDepositAmount = 0.01; // 0.01 SOL
-	console.log(
-		`[INFO] Depositing ${solDepositAmount} SOL into privacy pool...`,
-	);
+	// // Deposit SOL
+	// const solDepositAmount = 0.01; // 0.01 SOL
+	// console.log(
+	// 	`[INFO] Depositing ${solDepositAmount} SOL into privacy pool...`,
+	// );
 
-	try {
-		const solDepositResult = await sdk.depositSol({
-			amount: solDepositAmount,
-			onStatus: (status: string) =>
-				console.log(`[INFO] ${status}`),
-			utxoWalletSigned: signature,
-			utxoWalletSignTransaction: async (tx) => {
-				// Sign the transaction with the actual funded keypair
-				(tx as any).sign([keypair]);
-				return tx;
-			},
-		});
+	// try {
+	// 	const solDepositResult = await sdk.depositSol({
+	// 		amount: solDepositAmount,
+	// 		onStatus: (status: string) =>
+	// 			console.log(`[INFO] ${status}`),
+	// 		utxoWalletSigned: signature,
+	// 		utxoWalletSignTransaction: async (tx) => {
+	// 			// Sign the transaction with the actual funded keypair
+	// 			(tx as any).sign([keypair]);
+	// 			return tx;
+	// 		},
+	// 	});
 
-		if (!solDepositResult.success) {
-			console.error(
-				"[ERROR] SOL deposit failed:",
-				solDepositResult.error,
-			);
-			if (isCloakError(solDepositResult.error)) {
-				console.error(
-					`[ERROR] Error code: ${solDepositResult.error.code}`,
-				);
-				if (solDepositResult.error.details) {
-					console.error(
-						"[ERROR] Details:",
-						JSON.stringify(
-							solDepositResult.error
-								.details,
-							null,
-							2,
-						),
-					);
-				}
-			}
-			process.exit(1);
-		}
+	// 	if (!solDepositResult.success) {
+	// 		console.error(
+	// 			"[ERROR] SOL deposit failed:",
+	// 			solDepositResult.error,
+	// 		);
+	// 		if (isCloakError(solDepositResult.error)) {
+	// 			console.error(
+	// 				`[ERROR] Error code: ${solDepositResult.error.code}`,
+	// 			);
+	// 			if (solDepositResult.error.details) {
+	// 				console.error(
+	// 					"[ERROR] Details:",
+	// 					JSON.stringify(
+	// 						solDepositResult.error
+	// 							.details,
+	// 						null,
+	// 						2,
+	// 					),
+	// 				);
+	// 			}
+	// 		}
+	// 		process.exit(1);
+	// 	}
 
-		console.log("[INFO] SOL deposit successful");
-		console.log(
-			`[INFO] Transaction signature: ${solDepositResult.signature}`,
-		);
-		console.log(
-			`[INFO] View on explorer: https://explorer.solana.com/tx/${solDepositResult.signature}?cluster=devnet\n`,
-		);
-	} catch (error) {
-		console.error("[ERROR] SOL deposit failed with exception");
-		if (isCloakError(error)) {
-			console.error(`[ERROR] Error code: ${error.code}`);
-			console.error(`[ERROR] Message: ${error.message}`);
-			if (error.details) {
-				console.error(
-					"[ERROR] Details:",
-					JSON.stringify(error.details, null, 2),
-				);
-			}
-		} else {
-			console.error("[ERROR]", error);
-		}
-		process.exit(1);
-	}
+	// 	console.log("[INFO] SOL deposit successful");
+	// 	console.log(
+	// 		`[INFO] Transaction signature: ${solDepositResult.signature}`,
+	// 	);
+	// 	console.log(
+	// 		`[INFO] View on explorer: https://explorer.solana.com/tx/${solDepositResult.signature}?cluster=devnet\n`,
+	// 	);
+	// } catch (error) {
+	// 	console.error("[ERROR] SOL deposit failed with exception");
+	// 	if (isCloakError(error)) {
+	// 		console.error(`[ERROR] Error code: ${error.code}`);
+	// 		console.error(`[ERROR] Message: ${error.message}`);
+	// 		if (error.details) {
+	// 			console.error(
+	// 				"[ERROR] Details:",
+	// 				JSON.stringify(error.details, null, 2),
+	// 			);
+	// 		}
+	// 	} else {
+	// 		console.error("[ERROR]", error);
+	// 	}
+	// 	process.exit(1);
+	// }
 
-	// Check balance after deposit
-	const postSolDepositBalance = await sdk.getSolBalance(signature);
-	console.log(
-		`[INFO] SOL balance after deposit: ${
-			postSolDepositBalance.total.toNumber() / 1e9
-		} SOL (${postSolDepositBalance.count} UTXOs)\n`,
-	);
+	// // Check balance after deposit
+	// const postSolDepositBalance = await sdk.getSolBalance(signature);
+	// console.log(
+	// 	`[INFO] SOL balance after deposit: ${
+	// 		postSolDepositBalance.total.toNumber() / 1e9
+	// 	} SOL (${postSolDepositBalance.count} UTXOs)\n`,
+	// );
 
-	// Withdraw SOL
-	const solWithdrawAmount = 0.005; // 0.005 SOL
-	console.log(`[INFO] Withdrawing ${solWithdrawAmount} SOL...`);
+	// // Withdraw SOL
+	// const solWithdrawAmount = 0.009; // 0.005 SOL
+	// console.log(`[INFO] Withdrawing ${solWithdrawAmount} SOL...`);
 
-	try {
-		const solWithdrawResult = await sdk.withdrawSol({
-			amount: solWithdrawAmount,
-			recipientAddress: sdk.getPublicKey(), // Withdraw to self
-			onStatus: (status: string) =>
-				console.log(`[INFO] ${status}`),
-			utxoWalletSigned: signature,
-			maxRetries: 5,
-		});
+	// try {
+	// 	const solWithdrawResult = await sdk.withdrawSol({
+	// 		amount: solWithdrawAmount,
+	// 		recipientAddress: sdk.getPublicKey(), // Withdraw to self
+	// 		onStatus: (status: string) =>
+	// 			console.log(`[INFO] ${status}`),
+	// 		utxoWalletSigned: signature,
+	// 		maxRetries: 5,
+	// 	});
 
-		if (!solWithdrawResult.success) {
-			console.error(
-				"[ERROR] SOL withdrawal failed:",
-				solWithdrawResult.error,
-			);
-			if (isCloakError(solWithdrawResult.error)) {
-				console.error(
-					`[ERROR] Error code: ${solWithdrawResult.error.code}`,
-				);
-				if (solWithdrawResult.error.details) {
-					console.error(
-						"[ERROR] Details:",
-						JSON.stringify(
-							solWithdrawResult.error
-								.details,
-							null,
-							2,
-						),
-					);
-				}
-			}
-			process.exit(1);
-		}
+	// 	if (!solWithdrawResult.success) {
+	// 		console.error(
+	// 			"[ERROR] SOL withdrawal failed:",
+	// 			solWithdrawResult.error,
+	// 		);
+	// 		if (isCloakError(solWithdrawResult.error)) {
+	// 			console.error(
+	// 				`[ERROR] Error code: ${solWithdrawResult.error.code}`,
+	// 			);
+	// 			if (solWithdrawResult.error.details) {
+	// 				console.error(
+	// 					"[ERROR] Details:",
+	// 					JSON.stringify(
+	// 						solWithdrawResult.error
+	// 							.details,
+	// 						null,
+	// 						2,
+	// 					),
+	// 				);
+	// 			}
+	// 		}
+	// 		process.exit(1);
+	// 	}
 
-		console.log("[INFO] SOL withdrawal successful");
-		console.log(
-			`[INFO] Transaction signature: ${solWithdrawResult.signature}`,
-		);
-		console.log(
-			`[INFO] View on explorer: https://explorer.solana.com/tx/${solWithdrawResult.signature}?cluster=devnet\n`,
-		);
-	} catch (error) {
-		console.error("[ERROR] SOL withdrawal failed with exception");
-		if (isCloakError(error)) {
-			console.error(`[ERROR] Error code: ${error.code}`);
-			console.error(`[ERROR] Message: ${error.message}`);
-			if (error.details) {
-				console.error(
-					"[ERROR] Details:",
-					JSON.stringify(error.details, null, 2),
-				);
-			}
-		} else {
-			console.error("[ERROR]", error);
-		}
-		process.exit(1);
-	}
+	// 	console.log("[INFO] SOL withdrawal successful");
+	// 	console.log(
+	// 		`[INFO] Transaction signature: ${solWithdrawResult.signature}`,
+	// 	);
+	// 	console.log(
+	// 		`[INFO] View on explorer: https://explorer.solana.com/tx/${solWithdrawResult.signature}?cluster=devnet\n`,
+	// 	);
+	// } catch (error) {
+	// 	console.error("[ERROR] SOL withdrawal failed with exception");
+	// 	if (isCloakError(error)) {
+	// 		console.error(`[ERROR] Error code: ${error.code}`);
+	// 		console.error(`[ERROR] Message: ${error.message}`);
+	// 		if (error.details) {
+	// 			console.error(
+	// 				"[ERROR] Details:",
+	// 				JSON.stringify(error.details, null, 2),
+	// 			);
+	// 		}
+	// 	} else {
+	// 		console.error("[ERROR]", error);
+	// 	}
+	// 	process.exit(1);
+	// }
 
 	// Final SOL balance
 	const finalSolBalance = await sdk.getSolBalance(signature);
@@ -248,8 +248,8 @@ async function main() {
 	// USDC mint address (devnet)
 	// Note: Replace with the actual USDC mint address for your environment
 	const USDC_MINT =
-		process.env.USDC_MINT ||
-		"Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"; // Devnet USDC
+		// process.env.USDC_MINT ||
+		"4sWNB8zGWHkh6UnmwiEtzNxL4XrN7uK9tosbESbJFfVs"; // Devnet USDC
 
 	// Check initial USDC balance (force refresh to get fresh data)
 	console.log("[INFO] Checking initial USDC balance...");
@@ -267,7 +267,7 @@ async function main() {
 	// ============================================
 	// DEPOSIT USDC
 	// ============================================
-	const depositAmount = 1_000_000; // 1 USDC (6 decimals)
+	const depositAmount = 1000; // 1 USDC (6 decimals)
 	console.log(
 		`[INFO] Depositing ${
 			depositAmount / 1e6
@@ -350,7 +350,7 @@ async function main() {
 	// ============================================
 	// WITHDRAW USDC
 	// ============================================
-	const withdrawAmount = 500_000; // 0.5 USDC (6 decimals)
+	const withdrawAmount = 1000; // 0.5 USDC (6 decimals)
 	console.log(`[INFO] Withdrawing ${withdrawAmount / 1e6} USDC...`);
 
 	try {

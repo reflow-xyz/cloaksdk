@@ -13,6 +13,7 @@ import {
 	ALT_ADDRESS,
 	CIRCUIT_PATH,
 	FEE_RECIPIENT,
+	FIELD_SIZE,
 	MERKLE_TREE_DEPTH,
 	PROGRAM_ID,
 	TRANSACT_SPL_IX_DISCRIMINATOR,
@@ -37,6 +38,7 @@ import {
 } from "./validation";
 import { ErrorCodes, ValidationError, NetworkError, TransactionError } from '../errors';
 import { fetchWithRetry } from "./fetchWithRetry";
+import { getSplMintId, mintIdMatches } from './spl-mint-id';
 
 /**
  * Query remote tree state from relayer API
@@ -347,15 +349,8 @@ export async function withdrawSpl(
 		);
 	}
 
-	// Convert mint address to numeric format for UTXO filtering
-	// UTXOs are stored with numeric mint addresses after conversion
-	const mintBytes = mint.toBytes();
-	const mintBN = new BN(mintBytes);
-	const FIELD_SIZE = new BN(
-		"21888242871839275222246405745257275088548364400416034343698204186575808495617",
-	);
-	const mintAddressBN = mintBN.mod(FIELD_SIZE);
-	const mintAddressNumeric = mintAddressBN.toString();
+	// Convert mint address to numeric format using BLAKE2b-128 (~39 digits instead of ~76)
+	const mintAddressNumeric = getSplMintId(mintAddress);
 
 	// Calculate withdrawal fee
 	let fee_amount = Math.floor(amount * (WITHDRAW_FEE_RATE / 100));
@@ -424,10 +419,10 @@ export async function withdrawSpl(
 			);
 
 			// Filter for this specific mint and non-zero amounts
-			// Use numeric mint address for comparison since UTXOs are stored that way
+			// Use backwards-compatible matching to support both old and new mint ID formats
 			const mintUtxos = allUtxos.filter(
 				(utxo) =>
-					utxo.mintAddress === mintAddressNumeric &&
+					mintIdMatches(utxo.mintAddress, mintAddress) &&
 					utxo.amount.gt(new BN(0)),
 			);
 
