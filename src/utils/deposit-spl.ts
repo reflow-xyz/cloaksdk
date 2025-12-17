@@ -205,9 +205,18 @@ async function relaySplDepositTorelayer(
 		}
 
 		const result = (await response.json()) as {
-			signature: string;
+			signature?: string;
 			success: boolean;
+			error?: string;
 		};
+
+		if (!result.success || !result.signature) {
+			throw new NetworkError(
+				ErrorCodes.RELAYER_ERROR,
+				`SPL deposit relay failed: ${result.error || 'Unknown error'}`,
+				{ endpoint: `${relayerUrl}/deposit/spl` }
+			);
+		}
 
 		return result.signature;
 	} catch (err) {

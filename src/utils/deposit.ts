@@ -1115,9 +1115,18 @@ async function relayDepositTorelayer(
 		}
 
 		const result = (await response.json()) as {
-			signature: string;
+			signature?: string;
 			success: boolean;
+			error?: string;
 		};
+
+		if (!result.success || !result.signature) {
+			throw new NetworkError(
+				ErrorCodes.RELAYER_ERROR,
+				`Deposit relay failed: ${result.error || 'Unknown error'}`,
+				{ endpoint: `${relayerUrl}/deposit` }
+			);
+		}
 
 		return result.signature;
 	} catch (error) {
