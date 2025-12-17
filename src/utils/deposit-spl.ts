@@ -667,6 +667,12 @@ export async function depositSpl(
 		// Determine which wallet to use for the deposit (the one providing funds)
 		const depositWallet = utxoWalletSigned ? utxoWalletSigned.publicKey : signed.publicKey;
 
+		// Derive points account PDA: seeds = ["p", signer, mint]
+		const [pointsAccountPDA] = PublicKey.findProgramAddressSync(
+			[Buffer.from("p"), depositWallet.toBuffer(), mint.toBuffer()],
+			PROGRAM_ID,
+		);
+
 		const instruction = new TransactionInstruction({
 			keys: [
 				{
@@ -693,6 +699,12 @@ export async function depositSpl(
 				{
 					pubkey: depositWallet,
 					isSigner: true,
+					isWritable: true,
+				},
+				// points_account - tracks deposit points
+				{
+					pubkey: pointsAccountPDA,
+					isSigner: false,
 					isWritable: true,
 				},
 				// recipient (not used in deposits) - use UTXO wallet if provided

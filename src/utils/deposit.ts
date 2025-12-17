@@ -19,6 +19,7 @@ import {
 	FEE_RECIPIENT,
 	FIELD_SIZE,
 	MERKLE_TREE_DEPTH,
+	NATIVE_SOL,
 	PROGRAM_ID,
 	TRANSACT_IX_DISCRIMINATOR,
 } from "./constants";
@@ -652,6 +653,13 @@ export async function deposit(
 		// Determine which wallet to use for the deposit (the one providing funds)
 		const depositWallet = utxoWalletSigned ? utxoWalletSigned.publicKey : signed.publicKey;
 
+		// Derive points account PDA: seeds = ["p", signer, SOL_ADDRESS]
+		const SOL_ADDRESS = new PublicKey(NATIVE_SOL.mintAddress);
+		const [pointsAccountPDA] = PublicKey.findProgramAddressSync(
+			[Buffer.from("p"), depositWallet.toBuffer(), SOL_ADDRESS.toBuffer()],
+			PROGRAM_ID,
+		);
+
 		// Create the transaction instruction
 		const instruction = new TransactionInstruction({
 			keys: [
@@ -706,6 +714,12 @@ export async function deposit(
 				{
 					pubkey: depositWallet,
 					isSigner: true,
+					isWritable: true,
+				},
+				// points_account - tracks deposit points
+				{
+					pubkey: pointsAccountPDA,
+					isSigner: false,
 					isWritable: true,
 				},
 				{
