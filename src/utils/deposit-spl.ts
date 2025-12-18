@@ -16,7 +16,6 @@ import BN from "bn.js";
 import { Keypair as UtxoKeypair } from "../models/keypair";
 import { Utxo } from "../models/utxo";
 import {
-	ALT_ADDRESS,
 	CIRCUIT_PATH,
 	DEPOSIT_FEE_RATE,
 	FEE_RECIPIENT,
@@ -255,6 +254,7 @@ export async function depositSpl(
 	utxoWalletSigned?: Signed,
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
+	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
 ): Promise<{ success: boolean; signature?: string }> {
 	if (retryCount > 0) {
 		log(`Retry attempt ${retryCount}/${maxRetries}`);
@@ -652,16 +652,24 @@ export async function depositSpl(
 			PROGRAM_ID,
 		);
 
+		// Validate ALT address is provided
+		if (!altAddress) {
+			throw new ConfigurationError(
+				ErrorCodes.INVALID_CONFIGURATION,
+				"altAddress is required for SPL deposit transactions"
+			);
+		}
+
 		// Get Address Lookup Table
 		const lookupTableAccount = await useExistingALT(
 			connection,
-			ALT_ADDRESS,
+			altAddress,
 		);
 
 		if (!lookupTableAccount?.value) {
 			throw new ConfigurationError(
 				ErrorCodes.INVALID_CONFIGURATION,
-				`ALT not found at address ${ALT_ADDRESS.toString()}`
+				`ALT not found at address ${altAddress.toString()}`
 			);
 		}
 
@@ -832,6 +840,7 @@ export async function depositSpl(
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
 					circuitPath,
+					altAddress,
 				);
 			}
 		} catch (err) {
@@ -923,6 +932,7 @@ export async function depositSpl(
 					utxoWalletSigned,
 					utxoWalletSignTransaction,
 					circuitPath,
+					altAddress,
 				);
 			}
 		}
@@ -965,6 +975,7 @@ export async function depositSpl(
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
 				circuitPath,
+				altAddress,
 			);
 		}
 

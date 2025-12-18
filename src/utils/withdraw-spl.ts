@@ -10,7 +10,6 @@ import {
 } from "../utils/prover";
 import { log, warn, error as error, serializeError } from "./logger";
 import {
-	ALT_ADDRESS,
 	CIRCUIT_PATH,
 	FEE_RECIPIENT,
 	FIELD_SIZE,
@@ -323,6 +322,7 @@ export async function withdrawSpl(
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
+	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
 ): Promise<{
 	isPartial: boolean;
 	success?: boolean;
@@ -507,6 +507,7 @@ export async function withdrawSpl(
 					utxoWalletSignTransaction,
 					withdrawal.utxos, // Provide specific UTXOs for this withdrawal
 					circuitPath,
+					altAddress,
 				);
 
 				if (result.success && result.signature) {
@@ -752,7 +753,7 @@ export async function withdrawSpl(
 			encryptedOutput1: uint8ArrayToBase64(encryptedOutput1),
 			encryptedOutput2: uint8ArrayToBase64(encryptedOutput2),
 			fee: fee_amount,
-			lookupTableAddress: ALT_ADDRESS.toString(),
+			lookupTableAddress: altAddress ? altAddress.toString() : '',
 		};
 
 		// Check if root changed before submitting transaction
@@ -780,6 +781,7 @@ export async function withdrawSpl(
 					utxoWalletSignTransaction,
 					providedUtxos,
 					circuitPath,
+					altAddress,
 				);
 			}
 		} catch (err) {
@@ -906,6 +908,7 @@ export async function withdrawSpl(
 					utxoWalletSignTransaction,
 					providedUtxos,
 					circuitPath,
+					altAddress,
 				);
 			}
 		}
@@ -963,6 +966,7 @@ export async function withdrawSpl(
 				utxoWalletSignTransaction,
 				providedUtxos,
 				circuitPath,
+				altAddress,
 			);
 		}
 

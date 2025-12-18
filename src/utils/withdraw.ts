@@ -15,7 +15,6 @@ import {
 } from "../utils/prover";
 import { useExistingALT } from "./address_lookup_table";
 import {
-	ALT_ADDRESS,
 	CIRCUIT_PATH,
 	FEE_RECIPIENT,
 	FIELD_SIZE,
@@ -305,6 +304,7 @@ export async function withdraw(
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
+	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
 ): Promise<{
 	isPartial: boolean;
 	success?: boolean;
@@ -338,9 +338,18 @@ export async function withdraw(
 
 	amount_in_lamports -= fee_amount_in_lamports;
 	let isPartial = false;
+
+	// Validate ALT address is provided
+	if (!altAddress) {
+		throw new ValidationError(
+			ErrorCodes.INVALID_CONFIGURATION,
+			"altAddress is required for withdrawal transactions"
+		);
+	}
+
 	await useExistingALT(
 		connection,
-		ALT_ADDRESS,
+		altAddress,
 	);
 	try {
 		// Initialize the light protocol hasher
@@ -359,11 +368,6 @@ export async function withdraw(
 			[Buffer.from("merkle_tree")],
 			PROGRAM_ID,
 		);
-
-		// const [feeRecipientAccount] = PublicKey.findProgramAddressSync(
-		//     [Buffer.from('fee_recipient'), DEPLOYER_ID.toBuffer()],
-		//     PROGRAM_ID
-		// );
 
 		const [treeTokenAccount] = PublicKey.findProgramAddressSync(
 			[Buffer.from("tree_token")],
@@ -523,6 +527,7 @@ export async function withdraw(
 					utxoWalletSignTransaction,
 					withdrawal.utxos, // Provide specific UTXOs for this withdrawal
 					circuitPath,
+					altAddress,
 				);
 
 				if (result.success && result.signature) {
@@ -810,7 +815,7 @@ export async function withdraw(
 			encryptedOutput1: uint8ArrayToBase64(encryptedOutput1),
 			encryptedOutput2: uint8ArrayToBase64(encryptedOutput2),
 			fee: fee_amount_in_lamports,
-			lookupTableAddress: ALT_ADDRESS.toString(),
+			lookupTableAddress: altAddress.toString(),
 		};
 
 		// Check if root changed before submitting transaction
@@ -837,6 +842,7 @@ export async function withdraw(
 					utxoWalletSignTransaction,
 					providedUtxos,
 					circuitPath,
+					altAddress,
 				);
 			}
 		} catch (err) {
@@ -995,6 +1001,7 @@ export async function withdraw(
 					utxoWalletSignTransaction,
 					providedUtxos,
 					circuitPath,
+					altAddress,
 				);
 			}
 		}
@@ -1054,6 +1061,7 @@ export async function withdraw(
 				utxoWalletSignTransaction,
 				providedUtxos,
 				circuitPath,
+				altAddress,
 			);
 		}
 

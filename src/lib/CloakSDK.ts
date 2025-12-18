@@ -72,13 +72,6 @@ import { mintIdMatches } from "../utils/spl-mint-id";
  * ```
  */
 /**
- * Helper to sleep for a specified duration
- */
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
  * Helper to check if signer is a Keypair
  */
 function isKeypair(signer: TransactionSigner | Keypair): signer is Keypair {
@@ -93,6 +86,7 @@ export class CloakSDK {
 	private programId: string;
 	private verbose: boolean;
 	private circuitPath: string;
+	private altAddress: PublicKey;
 	private hasher: any = null;
 	private signed: Signed | null = null;
 	private initialized: boolean = false;
@@ -113,6 +107,9 @@ export class CloakSDK {
 			"8wbkRNdUfjsL3hJotuHX9innLPAdChJ5qGYG41Htpmuk";
 		this.verbose = config.verbose || false;
 		this.circuitPath = config.circuitPath || CIRCUIT_PATH;
+		this.altAddress = typeof config.altAddress === 'string'
+			? new PublicKey(config.altAddress)
+			: config.altAddress;
 
 		// Set global verbose mode for logger
 		setVerbose(this.verbose);
@@ -198,14 +195,15 @@ export class CloakSDK {
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				this.circuitPath,
+				undefined, // transactionIndex
+				undefined, // forceFreshDeposit
+				undefined, // buildOnly
+				this.altAddress,
 			);
 
 			if (result.success) {
 				log(`Deposit successful: ${result.signature}`);
 			}
-
-			// Wait 500ms for relayer to process and index new UTXOs
-			// await sleep(500);
 
 			return result;
 		} catch (err) {
@@ -262,6 +260,7 @@ export class CloakSDK {
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				this.circuitPath,
+				this.altAddress,
 			);
 
 			if (result.success) {
@@ -269,9 +268,6 @@ export class CloakSDK {
 					`SPL deposit successful: ${result.signature}`,
 				);
 			}
-
-			// Wait 500ms for relayer to process and index new UTXOs
-			// await sleep(500);
 
 			return result;
 		} catch (err) {
@@ -570,7 +566,8 @@ export class CloakSDK {
 				this.circuitPath,
 				transactionIndex, // Pass transaction index for unique dummy UTXOs in batch deposits
 				true, // forceFreshDeposit: Skip UTXO fetching for batch deposits to avoid conflicts
-				true // buildOnly: Only build the transaction, don't submit it
+				true, // buildOnly: Only build the transaction, don't submit it
+				this.altAddress,
 			);
 			
 			// Get the transaction from the result
@@ -596,7 +593,7 @@ export class CloakSDK {
 		amount: number,
 		mintAddress: string,
 		onStatus?: (status: string) => void,
-		transactionIndex?: number,
+		_transactionIndex?: number,
 		utxoWalletSigned?: Signed,
 		utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>
 	): Promise<VersionedTransaction> {
@@ -626,7 +623,8 @@ export class CloakSDK {
 				0, // retryCount
 				utxoWalletSigned,
 				utxoWalletSignTransaction,
-				this.circuitPath
+				this.circuitPath,
+				this.altAddress,
 			);
 		} catch (err) {
 			// Expected to fail at submission, but we captured the transaction
@@ -781,6 +779,7 @@ export class CloakSDK {
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
 				this.circuitPath,
+				this.altAddress,
 			);
 
 			if (result.success) {
@@ -792,9 +791,6 @@ export class CloakSDK {
 					log("Withdrawal successful");
 				}
 			}
-
-			// Wait 500ms for relayer to process and index new UTXOs
-			// await sleep(500);
 
 			return result;
 		} catch (err) {
@@ -870,6 +866,7 @@ export class CloakSDK {
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
 				this.circuitPath,
+				this.altAddress,
 			);
 
 			if (result.success) {
@@ -881,9 +878,6 @@ export class CloakSDK {
 					log("SPL withdrawal successful");
 				}
 			}
-
-			// Wait 500ms for relayer to process and index new UTXOs
-			// await sleep(500);
 
 			return result;
 		} catch (err) {
@@ -1051,9 +1045,6 @@ export class CloakSDK {
 	async getSolBalance(utxoWalletSigned?: Signed, forceRefresh: boolean = false): Promise<UtxoBalance> {
 		this.ensureInitialized();
 
-		// Wait 500ms to allow relayer to process recent transactions
-		// await sleep(500);
-
 		try {
 			// Check if tree state has changed before fetching UTXOs
 			await this.checkAndRefreshTreeState();
@@ -1141,9 +1132,6 @@ export class CloakSDK {
 	): Promise<UtxoBalance> {
 		this.ensureInitialized();
 
-		// Wait 500ms to allow relayer to process recent transactions
-		// await sleep(500);
-
 		try {
 			// Check if tree state has changed before fetching UTXOs
 			await this.checkAndRefreshTreeState();
@@ -1154,7 +1142,7 @@ export class CloakSDK {
 				this.relayerUrl,
 				undefined,
 				this.hasher,
-				forceRefresh, // Pass forceRefresh to getMyUtxos
+				forceRefresh,
 			);
 
 			// Filter for this specific mint using backwards-compatible matching

@@ -12,16 +12,13 @@ import BN from "bn.js";
 import { Keypair as UtxoKeypair } from "../models/keypair";
 import { Utxo } from "../models/utxo";
 import {
-	ALT_ADDRESS,
 	CIRCUIT_PATH,
-	DEPLOYER_ID,
 	DEPOSIT_FEE_RATE,
 	FEE_RECIPIENT,
 	FIELD_SIZE,
 	MERKLE_TREE_DEPTH,
 	NATIVE_SOL,
 	PROGRAM_ID,
-	TRANSACT_IX_DISCRIMINATOR,
 } from "./constants";
 import { EncryptionService, serializeProofAndExtData } from "./encryption";
 import type { Signed } from "./getAccountSign";
@@ -34,7 +31,6 @@ import {
 	parseTransactionError,
 } from "./validation";
 import { ErrorCodes, ValidationError, NetworkError, TransactionError, ConfigurationError } from '../errors';
-import { withUtxoLocks } from "./utxoLock";
 
 import { Buffer } from "buffer";
 import { useExistingALT } from "./address_lookup_table";
@@ -152,6 +148,7 @@ export async function deposit(
 	transactionIndex?: number, // Index for batch deposits to create unique dummy UTXOs
 	forceFreshDeposit?: boolean, // Force fresh deposit path (skip UTXO fetching) for batch deposits
 	buildOnly?: boolean, // Only build the transaction, don't submit or confirm it
+	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
 ): Promise<{ success: boolean; signature?: string; transaction?: VersionedTransaction }> {
 	// Validate that if utxoWalletSigned is provided, utxoWalletSignTransaction must also be provided
 	if (utxoWalletSigned && !utxoWalletSignTransaction) {
@@ -284,7 +281,7 @@ export async function deposit(
 
 			// Filter to only include unspent SOL UTXOs
 			existingUnspentUtxos = solUtxos.filter(
-				(utxo, index) => !utxoSpentStatuses[index],
+				(_utxo, index) => !utxoSpentStatuses[index],
 			);
 		}
 
@@ -632,15 +629,22 @@ export async function deposit(
 		} = findNullifierPDAs(proofToSubmit);
 
 		// Address Lookup Table for transaction size optimization
+		if (!altAddress) {
+			throw new ConfigurationError(
+				ErrorCodes.INVALID_CONFIGURATION,
+				"altAddress is required for deposit transactions"
+			);
+		}
+
 		const lookupTableAccount = await useExistingALT(
 			connection,
-			ALT_ADDRESS,
+			altAddress,
 		);
 
 		if (!lookupTableAccount?.value) {
 			throw new ConfigurationError(
 				ErrorCodes.INVALID_CONFIGURATION,
-				`ALT not found at address ${ALT_ADDRESS.toString()}`
+				`ALT not found at address ${altAddress.toString()}`
 			);
 		}
 
@@ -794,6 +798,7 @@ export async function deposit(
 					transactionIndex,
 					forceFreshDeposit,
 					buildOnly,
+					altAddress,
 				);
 			}
 		} catch (error) {
@@ -962,6 +967,7 @@ export async function deposit(
 					transactionIndex,
 					forceFreshDeposit,
 					buildOnly,
+					altAddress,
 				);
 			}
 		}
@@ -1005,6 +1011,7 @@ export async function deposit(
 				transactionIndex,
 				forceFreshDeposit,
 				buildOnly,
+				altAddress,
 			);
 		}
 

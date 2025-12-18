@@ -44,6 +44,13 @@ export interface CloakSDKConfig {
   verbose?: boolean;
   /** Path to circuit files (without extension) for ZK proof generation */
   circuitPath?: string;
+  /**
+   * Address Lookup Table (ALT) address for transaction optimization.
+   * Required for all transactions. Use the appropriate ALT for your cluster:
+   * - Mainnet: G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj
+   * - Devnet: Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9
+   */
+  altAddress: PublicKey | string;
 }
 
 /**

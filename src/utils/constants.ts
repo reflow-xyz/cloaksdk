@@ -11,11 +11,6 @@ export const PROGRAM_ID = new PublicKey(
 		"8wbkRNdUfjsL3hJotuHX9innLPAdChJ5qGYG41Htpmuk",
 );
 
-export const DEPLOYER_ID = new PublicKey(
-	process.env.CLOAK_DEPLOYER_ID ||
-		"HEosZaCHerU9Lyt9TkQ8FWyP8qYPvWc9N8gjsroLUmGK",
-);
-
 export const FEE_RECIPIENT = new PublicKey(
 	process.env.CLOAK_FEE_RECIPIENT ||
 		"HEosZaCHerU9Lyt9TkQ8FWyP8qYPvWc9N8gjsroLUmGK",

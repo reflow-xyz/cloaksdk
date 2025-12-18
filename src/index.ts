@@ -80,6 +80,24 @@ export {
 } from './errors';
 export type { ErrorCode } from './errors';
 
+// Export wallet connector utilities
+export {
+  WalletConnector,
+  createSignerFromAdapter,
+  isSignableAdapter,
+  supportsBatchSigning,
+  supportsMessageSigning,
+} from './utils/wallet-connector';
+export type {
+  SignableWalletAdapter,
+  WalletConnectionState,
+  WalletConnectorOptions,
+} from './utils/wallet-connector';
+
 // Re-export Solana types for convenience
 export { Connection, Keypair, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 export type { VersionedTransaction } from '@solana/web3.js';
+
+// Re-export wallet adapter types for convenience
+export { WalletReadyState } from '@solana/wallet-adapter-base';
+export type { WalletAdapter } from '@solana/wallet-adapter-base';

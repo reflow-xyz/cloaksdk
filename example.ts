@@ -62,7 +62,7 @@ async function main() {
 	// Setup connection
 	const connection = new Connection(
 		process.env.RPC_URL ||
-			"https://devnet.helius-rpc.com/?api-key=17cb0ad2-833f-4962-bfbc-bfba9b2d23c1",
+			"https://mainnet.helius-rpc.com/?api-key=17cb0ad2-833f-4962-bfbc-bfba9b2d23c1",
 		"confirmed",
 	);
 
@@ -71,7 +71,11 @@ async function main() {
 		connection,
 		signer: new Keypair(),
 		verbose: false, // ENABLE VERBOSE LOGGING TO DEBUG
-		relayerUrl: "https://dev-api.cloaklabs.dev",
+		relayerUrl: "https://api.cloaklabs.dev",
+		// Address Lookup Table for devnet
+		// Use "G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj" for mainnet
+		// and Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9 for devnet
+		altAddress: "G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj",
 	});
 
 	console.log("[INFO] Initializing SDK...");
