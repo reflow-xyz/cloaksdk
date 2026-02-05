@@ -215,7 +215,7 @@ async function submitWithdrawTorelayer(params: any, relayerUrl: string): Promise
 async function submitDelayedWithdrawTorelayer(
 	params: any,
 	relayerUrl: string,
-): Promise<{ delayedWithdrawalId: number; executeAt: string }> {
+): Promise<{ delayedWithdrawalId: string; executeAt: string }> {
 	try {
 		log(
 			"Submitting delayed withdraw request to relayer backend...",
@@ -268,7 +268,7 @@ async function submitDelayedWithdrawTorelayer(
 
 		const result = (await response.json()) as {
 			success: boolean;
-			delayedWithdrawalId: number;
+			delayedWithdrawalId: string;
 			executeAt: string;
 			delayMinutes: number;
 			message: string;
@@ -310,7 +310,7 @@ export async function withdraw(
 	success?: boolean;
 	signature?: string;
 	signatures?: string[]; // For batch withdrawals
-	delayedWithdrawalId?: number;
+	delayedWithdrawalId?: string;
 	executeAt?: string;
 	error?: string; // Error message
 }> {
@@ -874,6 +874,7 @@ export async function withdraw(
 			const delayedParams = {
 				...withdrawParams,
 				delayMinutes: delayMinutes,
+				userPubkey: signed.publicKey.toString(),
 			};
 
 			const delayedResult =

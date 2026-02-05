@@ -221,7 +221,7 @@ export interface BatchWithdrawalParams {
  * Delayed withdrawal result
  */
 export interface DelayedWithdrawalResult {
-  delayedWithdrawalId: number;
+  delayedWithdrawalId: string;
   executeAt: string;
 }
 

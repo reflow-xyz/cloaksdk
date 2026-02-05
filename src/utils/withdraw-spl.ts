@@ -219,7 +219,7 @@ async function submitSplWithdrawTorelayer(params: any, relayerUrl: string): Prom
 async function submitDelayedSplWithdrawTorelayer(
 	params: any,
 	relayerUrl: string,
-): Promise<{ delayedWithdrawalId: number; executeAt: string }> {
+): Promise<{ delayedWithdrawalId: string; executeAt: string }> {
 	try {
 		log(
 			"Submitting delayed SPL withdraw request to relayer backend...",
@@ -272,7 +272,7 @@ async function submitDelayedSplWithdrawTorelayer(
 
 		const result = (await response.json()) as {
 			success: boolean;
-			delayedWithdrawalId: number;
+			delayedWithdrawalId: string;
 			executeAt: string;
 			delayMinutes: number;
 			message: string;
@@ -803,6 +803,7 @@ export async function withdrawSpl(
 			const delayedParams = {
 				...withdrawParams,
 				delayMinutes: delayMinutes,
+				userPubkey: signed.publicKey.toString(),
 			};
 
 			const delayedResult =

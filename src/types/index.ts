@@ -180,7 +180,7 @@ export interface WithdrawResult {
   /** All transaction signatures (for batch withdrawals with >2 UTXOs) */
   signatures?: string[];
   /** Delayed withdrawal ID (if delayed) */
-  delayedWithdrawalId?: number;
+  delayedWithdrawalId?: string;
   /** Execution timestamp (if delayed) */
   executeAt?: string;
   /** Error message (if failed) */
