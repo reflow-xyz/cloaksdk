@@ -122,10 +122,12 @@ async function decryptCachedOutputs(
 		for (let j = 0; j < batchResults.length; j++) {
 			const result = batchResults[j];
 			const encryptedOutput = batch[j];
+			const globalIndex = i + j;
 
 			if (result.status === "decrypted" && result.utxo) {
 				decryptedCount++;
 				const utxo = result.utxo;
+				utxo.index = globalIndex;
 
 				// Skip zero-amount UTXOs
 				if (utxo.amount.toNumber() === 0) {
@@ -155,29 +157,6 @@ async function decryptCachedOutputs(
 	if (candidateUtxos.length === 0) {
 		return [];
 	}
-
-	// Update merkle tree indices in parallel BEFORE checking spent status
-	// (nullifier calculation depends on correct index!)
-	log(`[SDK DEBUG CACHE] Updating merkle tree indices for ${candidateUtxos.length} UTXOs...`);
-	await Promise.all(
-		candidateUtxos.map(async (utxo) => {
-			try {
-				const commitment = await utxo.getCommitment();
-				const merkleProofResponse = await fetchWithRetry(
-					`${relayerUrl}/merkle/proof/${commitment}`,
-					undefined,
-					3,
-				);
-				if (merkleProofResponse.ok) {
-					const merkleProof = (await merkleProofResponse.json()) as { index: number };
-					utxo.index = merkleProof.index;
-				}
-			} catch (err) {
-				// Silently fail, keep original index
-			}
-		})
-	);
-	log(`[SDK DEBUG CACHE] Merkle tree indices updated`);
 
 	// Batch check if UTXOs are spent (must be AFTER index update!)
 	log(`[SDK DEBUG CACHE] About to check spent status for ${candidateUtxos.length} candidate UTXOs`);
@@ -270,7 +249,14 @@ export async function getMyUtxos(
 			setStatus?.(`(loading ${newUtxoCount} new utxos...)`);
 
 			const url = `${relayerUrl}/utxos/range?start=${utxoCache.lastFetchedIndex}&end=${totalUtxosInTree}`;
-			const newBatch = await fetchUserUtxos(signed, connection, url, setStatus, hasher);
+			const newBatch = await fetchUserUtxos(
+				signed,
+				connection,
+				url,
+				setStatus,
+				hasher,
+				utxoCache.lastFetchedIndex,
+			);
 
 			log(`[SDK] Fetched ${newBatch.encryptedOutputs.length} new encrypted outputs`);
 
@@ -324,7 +310,14 @@ export async function getMyUtxos(
 				const end = Math.min(offset + FETCH_UTXOS_GROUP_SIZE, totalUtxos);
 				const url = `${relayerUrl}/utxos/range?start=${offset}&end=${end}`;
 				batchPromises.push(
-					fetchUserUtxos(signed, connection, url, statusCallback, hasher)
+					fetchUserUtxos(
+						signed,
+						connection,
+						url,
+						statusCallback,
+						hasher,
+						offset,
+					)
 				);
 			}
 
@@ -354,28 +347,6 @@ export async function getMyUtxos(
 					}
 					nonZeroUtxos.push([k, utxo]);
 				}
-
-				// Update UTXO indices from Merkle tree - PARALLELIZE
-				await Promise.all(
-					nonZeroUtxos.map(async ([_, utxo]) => {
-						try {
-							const commitment = await utxo.getCommitment();
-							const merkleProofResponse = await fetchWithRetry(
-								`${relayerUrl}/merkle/proof/${commitment}`,
-								undefined,
-								3,
-							);
-							if (merkleProofResponse.ok) {
-								const merkleProof = (await merkleProofResponse.json()) as {
-									index: number;
-								};
-								utxo.index = merkleProof.index;
-							}
-						} catch (err) {
-							// Silently fail, keep original index
-						}
-					}),
-				);
 
 				// Batch check all UTXOs for spent status
 				const spentStatuses =
@@ -526,6 +497,7 @@ async function fetchUserUtxos(
 	apiUrl: string,
 	setStatus?: Function,
 	hasher?: any,
+	startIndex: number = 0,
 ): Promise<{
 	encryptedOutputs: string[];
 	utxos: Utxo[];
@@ -635,6 +607,7 @@ async function fetchUserUtxos(
 			batchResults.forEach((dres, index) => {
 				decryptionTaskFinished++;
 				if (dres.status == "decrypted" && dres.utxo) {
+					dres.utxo.index = startIndex + i + index;
 					myUtxos.push(dres.utxo);
 					myEncryptedOutputs.push(batch[index]);
 				}

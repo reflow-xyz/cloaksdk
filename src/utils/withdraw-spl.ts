@@ -115,6 +115,80 @@ async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise
 	}
 }
 
+async function fetchMerkleProofs(
+	commitments: string[],
+	relayerUrl: string,
+): Promise<Map<string, {
+	pathElements: string[];
+	pathIndices: number[];
+	index: number;
+	root: string;
+	nextIndex: number;
+}>> {
+	if (commitments.length === 0) {
+		return new Map();
+	}
+
+	try {
+		const response = await fetchWithRetry(
+			`${relayerUrl}/merkle/proofs`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ commitments }),
+			},
+			3,
+		);
+		if (!response.ok) {
+			throw new NetworkError(
+				ErrorCodes.API_FETCH_FAILED,
+				`Failed to fetch Merkle proofs: ${response.status} ${response.statusText}`,
+				{ endpoint: `${relayerUrl}/merkle/proofs`, statusCode: response.status }
+			);
+		}
+
+		const data = (await response.json()) as {
+			root: string;
+			nextIndex: number;
+			results: Array<{
+				success: boolean;
+				commitment: string;
+				index?: number;
+				pathElements?: string[];
+				pathIndices?: number[];
+				error?: string;
+			}>;
+		};
+
+		const map = new Map<string, {
+			pathElements: string[];
+			pathIndices: number[];
+			index: number;
+			root: string;
+			nextIndex: number;
+		}>();
+
+		for (const result of data.results) {
+			if (result.success && result.pathElements && result.pathIndices && result.index !== undefined) {
+				map.set(result.commitment, {
+					pathElements: result.pathElements,
+					pathIndices: result.pathIndices,
+					index: result.index,
+					root: data.root,
+					nextIndex: data.nextIndex,
+				});
+			}
+		}
+
+		return map;
+	} catch (err) {
+		error("Failed to fetch Merkle proofs batch from API:", err);
+		throw err;
+	}
+}
+
 /**
  * Find nullifier PDAs for the given proof
  */
@@ -328,7 +402,7 @@ export async function withdrawSpl(
 	success?: boolean;
 	signature?: string;
 	signatures?: string[]; // For batch withdrawals
-	delayedWithdrawalId?: number;
+	delayedWithdrawalId?: string;
 	executeAt?: string;
 	error?: string; // Error message
 }> {
@@ -579,29 +653,60 @@ export async function withdrawSpl(
 			.sub(new BN(amount))
 			.sub(new BN(fee_amount));
 
-		// Get Merkle proofs
-		const inputMerkleProofs = await Promise.all(
+		const commitments = await Promise.all(
 			inputs.map(async (utxo) => {
 				if (utxo.amount.eq(new BN(0))) {
-					return {
-						pathElements: [
-							...new Array(
-								MERKLE_TREE_DEPTH,
-							).fill("0"),
-						],
-						pathIndices:
-							Array(
-								MERKLE_TREE_DEPTH,
-							).fill(0),
-						index: 0,
-						root: "",
-						nextIndex: 0,
-					};
+					return null;
 				}
-				const commitment = await utxo.getCommitment();
-				return fetchMerkleProof(commitment, relayerUrl);
+				return utxo.getCommitment();
 			}),
 		);
+
+		const realCommitments = commitments.filter((c): c is string => !!c);
+		let proofMap = new Map<string, {
+			pathElements: string[];
+			pathIndices: number[];
+			index: number;
+			root: string;
+			nextIndex: number;
+		}>();
+
+		if (realCommitments.length > 1) {
+			proofMap = await fetchMerkleProofs(realCommitments, relayerUrl);
+		} else if (realCommitments.length === 1) {
+			const proof = await fetchMerkleProof(realCommitments[0], relayerUrl);
+			proofMap.set(realCommitments[0], proof);
+		}
+
+		// Get Merkle proofs
+		const inputMerkleProofs = inputs.map((utxo, idx) => {
+			if (utxo.amount.eq(new BN(0))) {
+				return {
+					pathElements: [
+						...new Array(
+							MERKLE_TREE_DEPTH,
+						).fill("0"),
+					],
+					pathIndices:
+						Array(
+							MERKLE_TREE_DEPTH,
+						).fill(0),
+					index: 0,
+					root: "",
+					nextIndex: 0,
+				};
+			}
+			const commitment = commitments[idx] as string;
+			const proof = proofMap.get(commitment);
+			if (!proof) {
+				throw new NetworkError(
+					ErrorCodes.API_FETCH_FAILED,
+					`Missing Merkle proof for commitment ${commitment}`,
+					{ endpoint: `${relayerUrl}/merkle/proofs` }
+				);
+			}
+			return proof;
+		});
 
 		// CRITICAL FIX: Update UTXO indices with correct values from tree BEFORE calculating nullifiers
 		inputs.forEach((utxo, idx) => {
