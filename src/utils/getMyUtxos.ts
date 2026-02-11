@@ -220,15 +220,29 @@ export async function getMyUtxos(
 
 	// Helper to query tree state
 	async function queryRemoteTreeState() {
-		const response = await fetchWithRetry(
+		try {
+			const prepareResponse = await fetchWithRetry(
+				`${relayerUrl}/tx/prepare`,
+				undefined,
+				3,
+			);
+			if (prepareResponse.ok) {
+				const prepareData = await prepareResponse.json() as { root: string; nextIndex: number };
+				return prepareData;
+			}
+		} catch {
+			// Backwards compatibility fallback below.
+		}
+
+		const fallbackResponse = await fetchWithRetry(
 			`${relayerUrl}/merkle/root`,
 			undefined,
 			3,
 		);
-		if (!response.ok) {
-			throw new Error(`Failed to fetch tree state: ${response.status}`);
+		if (!fallbackResponse.ok) {
+			throw new Error(`Failed to fetch tree state: ${fallbackResponse.status}`);
 		}
-		return await response.json() as { root: string; nextIndex: number };
+		return await fallbackResponse.json() as { root: string; nextIndex: number };
 	}
 
 	// Check if we have cached encrypted outputs
@@ -728,8 +742,8 @@ async function batchCheckUtxosSpent(
 		return spentStatuses;
 	} catch (error: any) {
 		error("Error in batch checking UTXOs:", error);
-		// On error, fall back to assuming all are unspent
-		return new Array(utxos.length).fill(false);
+		// Fail closed: if spent-check fails, treat as spent to prevent nullifier collisions/double-spend attempts.
+		return new Array(utxos.length).fill(true);
 	}
 }
 

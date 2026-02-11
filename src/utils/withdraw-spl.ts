@@ -32,12 +32,15 @@ import {
 	getRelayerPublicKey,
 	getGlobalConfigPDA,
 } from "./spl-token-utils";
+import { parseTransactionError } from "./validation";
 import {
-	parseTransactionError,
-} from "./validation";
-import { ErrorCodes, ValidationError, NetworkError, TransactionError } from '../errors';
+	ErrorCodes,
+	ValidationError,
+	NetworkError,
+	TransactionError,
+} from "../errors";
 import { fetchWithRetry } from "./fetchWithRetry";
-import { getSplMintId, mintIdMatches } from './spl-mint-id';
+import { getSplMintId, mintIdMatches } from "./spl-mint-id";
 
 /**
  * Query remote tree state from relayer API
@@ -56,7 +59,10 @@ async function queryRemoteTreeState(relayerUrl: string): Promise<{
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle root and nextIndex: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayerUrl}/merkle/root`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/merkle/root`,
+					statusCode: response.status,
+				},
 			);
 		}
 		const data = (await response.json()) as {
@@ -75,7 +81,10 @@ async function queryRemoteTreeState(relayerUrl: string): Promise<{
 /**
  * Fetch Merkle proof from API for a given commitment
  */
-async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise<{
+async function fetchMerkleProof(
+	commitment: string,
+	relayerUrl: string,
+): Promise<{
 	pathElements: string[];
 	pathIndices: number[];
 	index: number;
@@ -92,7 +101,10 @@ async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle proof: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayerUrl}/merkle/proof/${commitment}`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/merkle/proof/${commitment}`,
+					statusCode: response.status,
+				},
 			);
 		}
 		const data = (await response.json()) as {
@@ -118,13 +130,18 @@ async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise
 async function fetchMerkleProofs(
 	commitments: string[],
 	relayerUrl: string,
-): Promise<Map<string, {
-	pathElements: string[];
-	pathIndices: number[];
-	index: number;
-	root: string;
-	nextIndex: number;
-}>> {
+): Promise<
+	Map<
+		string,
+		{
+			pathElements: string[];
+			pathIndices: number[];
+			index: number;
+			root: string;
+			nextIndex: number;
+		}
+	>
+> {
 	if (commitments.length === 0) {
 		return new Map();
 	}
@@ -145,7 +162,10 @@ async function fetchMerkleProofs(
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle proofs: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayerUrl}/merkle/proofs`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/merkle/proofs`,
+					statusCode: response.status,
+				},
 			);
 		}
 
@@ -162,16 +182,24 @@ async function fetchMerkleProofs(
 			}>;
 		};
 
-		const map = new Map<string, {
-			pathElements: string[];
-			pathIndices: number[];
-			index: number;
-			root: string;
-			nextIndex: number;
-		}>();
+		const map = new Map<
+			string,
+			{
+				pathElements: string[];
+				pathIndices: number[];
+				index: number;
+				root: string;
+				nextIndex: number;
+			}
+		>();
 
 		for (const result of data.results) {
-			if (result.success && result.pathElements && result.pathIndices && result.index !== undefined) {
+			if (
+				result.success &&
+				result.pathElements &&
+				result.pathIndices &&
+				result.index !== undefined
+			) {
 				map.set(result.commitment, {
 					pathElements: result.pathElements,
 					pathIndices: result.pathIndices,
@@ -215,7 +243,10 @@ function findNullifierPDAs(proof: any) {
 /**
  * Submit SPL withdraw request to relayer backend
  */
-async function submitSplWithdrawTorelayer(params: any, relayerUrl: string): Promise<string> {
+async function submitSplWithdrawTorelayer(
+	params: any,
+	relayerUrl: string,
+): Promise<string> {
 	try {
 		log(
 			"Submitting SPL withdraw request to relayer backend...",
@@ -241,23 +272,34 @@ async function submitSplWithdrawTorelayer(params: any, relayerUrl: string): Prom
 					error?: any;
 				};
 				// Handle various error formats
-				if (typeof errorData.error === 'string') {
+				if (typeof errorData.error === "string") {
 					errorMsg = errorData.error;
 				} else if (errorData.error) {
 					// Extract nested error details if possible
-					errorMsg = JSON.stringify(errorData.error, (_key, value) => {
-						// Handle circular references and special types
-						if (value instanceof Error) {
-							return {
-								name: value.name,
-								message: value.message,
-								stack: value.stack
-							};
-						}
-						return value;
-					}, 2);
+					errorMsg = JSON.stringify(
+						errorData.error,
+						(_key, value) => {
+							// Handle circular references and special types
+							if (
+								value instanceof
+								Error
+							) {
+								return {
+									name: value.name,
+									message: value.message,
+									stack: value.stack,
+								};
+							}
+							return value;
+						},
+						2,
+					);
 				} else {
-					errorMsg = JSON.stringify(errorData, null, 2);
+					errorMsg = JSON.stringify(
+						errorData,
+						null,
+						2,
+					);
 				}
 			} catch {
 				// If JSON parsing fails, use response text
@@ -266,7 +308,10 @@ async function submitSplWithdrawTorelayer(params: any, relayerUrl: string): Prom
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`SPL withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayerUrl}/withdraw/spl`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/withdraw/spl`,
+					statusCode: response.status,
+				},
 			);
 		}
 
@@ -318,21 +363,32 @@ async function submitDelayedSplWithdrawTorelayer(
 				const errorData = (await response.json()) as {
 					error?: any;
 				};
-				if (typeof errorData.error === 'string') {
+				if (typeof errorData.error === "string") {
 					errorMsg = errorData.error;
 				} else if (errorData.error) {
-					errorMsg = JSON.stringify(errorData.error, (_key, value) => {
-						if (value instanceof Error) {
-							return {
-								name: value.name,
-								message: value.message,
-								stack: value.stack
-							};
-						}
-						return value;
-					}, 2);
+					errorMsg = JSON.stringify(
+						errorData.error,
+						(_key, value) => {
+							if (
+								value instanceof
+								Error
+							) {
+								return {
+									name: value.name,
+									message: value.message,
+									stack: value.stack,
+								};
+							}
+							return value;
+						},
+						2,
+					);
 				} else {
-					errorMsg = JSON.stringify(errorData, null, 2);
+					errorMsg = JSON.stringify(
+						errorData,
+						null,
+						2,
+					);
 				}
 			} catch {
 				errorMsg = await response.text();
@@ -340,7 +396,10 @@ async function submitDelayedSplWithdrawTorelayer(
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`Delayed SPL withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayerUrl}/withdraw/spl/delayed`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/withdraw/spl/delayed`,
+					statusCode: response.status,
+				},
 			);
 		}
 
@@ -393,7 +452,9 @@ export async function withdrawSpl(
 	maxRetries: number = 3,
 	retryCount: number = 0,
 	utxoWalletSigned?: Signed,
-	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
+	utxoWalletSignTransaction?: (
+		tx: VersionedTransaction,
+	) => Promise<VersionedTransaction>,
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
@@ -419,7 +480,7 @@ export async function withdrawSpl(
 			ErrorCodes.INVALID_MINT_ADDRESS,
 			"Invalid mint address provided",
 			undefined,
-			error instanceof Error ? error : undefined
+			error instanceof Error ? error : undefined,
 		);
 	}
 
@@ -436,11 +497,15 @@ export async function withdrawSpl(
 		const lightWasm = hasher;
 
 		// Determine which wallet signature to use for UTXO derivation
-		const utxoSignature = utxoWalletSigned ? utxoWalletSigned.signature : signed.signature;
+		const utxoSignature = utxoWalletSigned
+			? utxoWalletSigned.signature
+			: signed.signature;
 
 		// Create encryption service for UTXO derivation (may use different wallet)
 		const utxoEncryptionService = new EncryptionService();
-		utxoEncryptionService.deriveEncryptionKeyFromSignature(utxoSignature);
+		utxoEncryptionService.deriveEncryptionKeyFromSignature(
+			utxoSignature,
+		);
 
 		// Derive PDAs
 		const [treeAccount] = PublicKey.findProgramAddressSync(
@@ -472,7 +537,8 @@ export async function withdrawSpl(
 			await queryRemoteTreeState(relayerUrl);
 
 		// Generate UTXO keypair from the UTXO wallet
-		const utxoPrivateKey = utxoEncryptionService.deriveUtxoPrivateKey();
+		const utxoPrivateKey =
+			utxoEncryptionService.deriveUtxoPrivateKey();
 		const utxoKeypair = new UtxoKeypair(utxoPrivateKey, lightWasm);
 
 		// Fetch or use provided UTXOs
@@ -480,7 +546,9 @@ export async function withdrawSpl(
 
 		if (providedUtxos) {
 			// Use the provided UTXOs (for batch withdrawals)
-			log(`[SDK] Using ${providedUtxos.length} provided UTXOs`);
+			log(
+				`[SDK] Using ${providedUtxos.length} provided UTXOs`,
+			);
 			unspentUtxos = providedUtxos;
 		} else {
 			// Fetch existing UTXOs (using UTXO wallet if provided)
@@ -496,13 +564,17 @@ export async function withdrawSpl(
 			// Use backwards-compatible matching to support both old and new mint ID formats
 			const mintUtxos = allUtxos.filter(
 				(utxo) =>
-					mintIdMatches(utxo.mintAddress, mintAddress) &&
-					utxo.amount.gt(new BN(0)),
+					mintIdMatches(
+						utxo.mintAddress,
+						mintAddress,
+					) && utxo.amount.gt(new BN(0)),
 			);
 
 			// Check which UTXOs are unspent
 			const utxoSpentStatuses = await Promise.all(
-				mintUtxos.map((utxo) => isUtxoSpent(connection, utxo)),
+				mintUtxos.map((utxo) =>
+					isUtxoSpent(connection, utxo),
+				),
 			);
 
 			unspentUtxos = mintUtxos.filter(
@@ -519,7 +591,7 @@ export async function withdrawSpl(
 			throw new ValidationError(
 				ErrorCodes.NO_UNSPENT_UTXOS,
 				errorMsg,
-				{ retryCount, maxRetries }
+				{ retryCount, maxRetries },
 			);
 		}
 
@@ -527,92 +599,97 @@ export async function withdrawSpl(
 		unspentUtxos.sort((a, b) => b.amount.cmp(a.amount));
 
 		// Check if we need more than 2 UTXOs for this withdrawal
-		const feeAmount = Math.floor(amount * (WITHDRAW_FEE_RATE / 100));
+		const feeAmount = Math.floor(
+			amount * (WITHDRAW_FEE_RATE / 100),
+		);
 		const totalNeeded = new BN(amount).add(new BN(feeAmount));
-		const firstTwoTotal = unspentUtxos.length >= 2
-			? unspentUtxos[0].amount.add(unspentUtxos[1].amount)
-			: unspentUtxos[0].amount;
+		const firstTwoTotal =
+			unspentUtxos.length >= 2
+				? unspentUtxos[0].amount.add(
+						unspentUtxos[1].amount,
+					)
+				: unspentUtxos[0].amount;
 
 		// If we need >2 UTXOs, use batch withdrawal logic
-		if (firstTwoTotal.lt(totalNeeded) && unspentUtxos.length > 2) {
-			log(`[SDK] Need more than 2 UTXOs for SPL withdrawal (have ${unspentUtxos.length} UTXOs), using batch withdrawal...`);
+		// if (firstTwoTotal.lt(totalNeeded) && unspentUtxos.length > 2) {
+		// 	log(`[SDK] Need more than 2 UTXOs for SPL withdrawal (have ${unspentUtxos.length} UTXOs), using batch withdrawal...`);
 
-			// Import batch withdrawal utilities
-			const { planBatchWithdrawals } = await import("./batch-withdraw.js");
+		// 	// Import batch withdrawal utilities
+		// 	const { planBatchWithdrawals } = await import("./batch-withdraw.js");
 
-			// Plan the batch withdrawals
-			const plan = planBatchWithdrawals(
-				amount,
-				WITHDRAW_FEE_RATE,
-				unspentUtxos,
-			);
+		// 	// Plan the batch withdrawals
+		// 	const plan = planBatchWithdrawals(
+		// 		amount,
+		// 		WITHDRAW_FEE_RATE,
+		// 		unspentUtxos,
+		// 	);
 
-			if (!plan || plan.withdrawals.length === 0) {
-				throw new ValidationError(
-					ErrorCodes.INVALID_STATE,
-					"Unable to plan batch withdrawals with available UTXOs"
-				);
-			}
+		// 	if (!plan || plan.withdrawals.length === 0) {
+		// 		throw new ValidationError(
+		// 			ErrorCodes.INVALID_STATE,
+		// 			"Unable to plan batch withdrawals with available UTXOs"
+		// 		);
+		// 	}
 
-			log(`[SDK] Executing ${plan.withdrawals.length} batch SPL withdrawals...`);
-			const signatures: string[] = [];
-			let totalWithdrawn = 0;
+		// 	log(`[SDK] Executing ${plan.withdrawals.length} batch SPL withdrawals...`);
+		// 	const signatures: string[] = [];
+		// 	let totalWithdrawn = 0;
 
-			// Execute each withdrawal sequentially to avoid conflicts
-			for (let i = 0; i < plan.withdrawals.length; i++) {
-				const withdrawal = plan.withdrawals[i];
+		// 	// Execute each withdrawal sequentially to avoid conflicts
+		// 	for (let i = 0; i < plan.withdrawals.length; i++) {
+		// 		const withdrawal = plan.withdrawals[i];
 
-				setStatus?.(`Processing withdrawal ${i + 1}/${plan.withdrawals.length}...`);
+		// 		setStatus?.(`Processing withdrawal ${i + 1}/${plan.withdrawals.length}...`);
 
-				// Recursively call withdrawSpl with the specific UTXOs
-				const result = await withdrawSpl(
-					recipient_address,
-					withdrawal.amount,
-					mintAddress,
-					signed,
-					connection,
-					relayerUrl,
-					setStatus,
-					hasher,
-					delayMinutes,
-					maxRetries,
-					retryCount,
-					utxoWalletSigned,
-					utxoWalletSignTransaction,
-					withdrawal.utxos, // Provide specific UTXOs for this withdrawal
-					circuitPath,
-					altAddress,
-				);
+		// 		// Recursively call withdrawSpl with the specific UTXOs
+		// 		const result = await withdrawSpl(
+		// 			recipient_address,
+		// 			withdrawal.amount,
+		// 			mintAddress,
+		// 			signed,
+		// 			connection,
+		// 			relayerUrl,
+		// 			setStatus,
+		// 			hasher,
+		// 			delayMinutes,
+		// 			maxRetries,
+		// 			retryCount,
+		// 			utxoWalletSigned,
+		// 			utxoWalletSignTransaction,
+		// 			withdrawal.utxos, // Provide specific UTXOs for this withdrawal
+		// 			circuitPath,
+		// 			altAddress,
+		// 		);
 
-				if (result.success && result.signature) {
-					signatures.push(result.signature);
-					totalWithdrawn += withdrawal.amount;
-				} else {
-					warn(`[SDK WARNING] Batch SPL withdrawal ${i + 1} failed: ${result.error}`);
-				}
+		// 		if (result.success && result.signature) {
+		// 			signatures.push(result.signature);
+		// 			totalWithdrawn += withdrawal.amount;
+		// 		} else {
+		// 			warn(`[SDK WARNING] Batch SPL withdrawal ${i + 1} failed: ${result.error}`);
+		// 		}
 
-				// Small delay between withdrawals
-				if (i < plan.withdrawals.length - 1) {
-					await new Promise(resolve => setTimeout(resolve, 500));
-				}
-			}
+		// 		// Small delay between withdrawals
+		// 		if (i < plan.withdrawals.length - 1) {
+		// 			await new Promise(resolve => setTimeout(resolve, 500));
+		// 		}
+		// 	}
 
-			if (signatures.length === 0) {
-				throw new NetworkError(
-					ErrorCodes.TRANSACTION_FAILED,
-					"All batch withdrawals failed"
-				);
-			}
+		// 	if (signatures.length === 0) {
+		// 		throw new NetworkError(
+		// 			ErrorCodes.TRANSACTION_FAILED,
+		// 			"All batch withdrawals failed"
+		// 		);
+		// 	}
 
-			log(`[SDK] Batch SPL withdrawal complete: ${signatures.length}/${plan.withdrawals.length} successful`);
+		// 	log(`[SDK] Batch SPL withdrawal complete: ${signatures.length}/${plan.withdrawals.length} successful`);
 
-			return {
-				isPartial: totalWithdrawn < amount,
-				success: true,
-				signature: signatures[0], // First signature for backward compatibility
-				signatures: signatures, // All signatures
-			};
-		}
+		// 	return {
+		// 		isPartial: totalWithdrawn < amount,
+		// 		success: true,
+		// 		signature: signatures[0], // First signature for backward compatibility
+		// 		signatures: signatures, // All signatures
+		// 	};
+		// }
 
 		// Normal withdrawal with up to 2 UTXOs
 		// Select inputs
@@ -625,7 +702,7 @@ export async function withdrawSpl(
 						// Don't specify keypair - use random to avoid nullifier collisions
 						amount: new BN("0"),
 						mintAddress: mintAddressNumeric,
-				  });
+					});
 
 		const inputs = [firstInput, secondInput];
 		const totalInputAmount = firstInput.amount.add(
@@ -635,7 +712,7 @@ export async function withdrawSpl(
 		if (totalInputAmount.toNumber() === 0) {
 			throw new ValidationError(
 				ErrorCodes.INSUFFICIENT_BALANCE,
-				"No balance available for this token"
+				"No balance available for this token",
 			);
 		}
 
@@ -644,7 +721,7 @@ export async function withdrawSpl(
 		if (totalInputAmount.lt(new BN(totalRequired))) {
 			throw new ValidationError(
 				ErrorCodes.INSUFFICIENT_BALANCE,
-				`Insufficient balance for withdrawal. Requested: ${amount} (+ ${fee_amount} fee = ${totalRequired} total), Available: ${totalInputAmount.toNumber()}`
+				`Insufficient balance for withdrawal. Requested: ${amount} (+ ${fee_amount} fee = ${totalRequired} total), Available: ${totalInputAmount.toNumber()}`,
 			);
 		}
 
@@ -662,19 +739,30 @@ export async function withdrawSpl(
 			}),
 		);
 
-		const realCommitments = commitments.filter((c): c is string => !!c);
-		let proofMap = new Map<string, {
-			pathElements: string[];
-			pathIndices: number[];
-			index: number;
-			root: string;
-			nextIndex: number;
-		}>();
+		const realCommitments = commitments.filter(
+			(c): c is string => !!c,
+		);
+		let proofMap = new Map<
+			string,
+			{
+				pathElements: string[];
+				pathIndices: number[];
+				index: number;
+				root: string;
+				nextIndex: number;
+			}
+		>();
 
 		if (realCommitments.length > 1) {
-			proofMap = await fetchMerkleProofs(realCommitments, relayerUrl);
+			proofMap = await fetchMerkleProofs(
+				realCommitments,
+				relayerUrl,
+			);
 		} else if (realCommitments.length === 1) {
-			const proof = await fetchMerkleProof(realCommitments[0], relayerUrl);
+			const proof = await fetchMerkleProof(
+				realCommitments[0],
+				relayerUrl,
+			);
 			proofMap.set(realCommitments[0], proof);
 		}
 
@@ -688,9 +776,9 @@ export async function withdrawSpl(
 						).fill("0"),
 					],
 					pathIndices:
-						Array(
-							MERKLE_TREE_DEPTH,
-						).fill(0),
+						Array(MERKLE_TREE_DEPTH).fill(
+							0,
+						),
 					index: 0,
 					root: "",
 					nextIndex: 0,
@@ -702,7 +790,9 @@ export async function withdrawSpl(
 				throw new NetworkError(
 					ErrorCodes.API_FETCH_FAILED,
 					`Missing Merkle proof for commitment ${commitment}`,
-					{ endpoint: `${relayerUrl}/merkle/proofs` }
+					{
+						endpoint: `${relayerUrl}/merkle/proofs`,
+					},
 				);
 			}
 			return proof;
@@ -858,15 +948,18 @@ export async function withdrawSpl(
 			encryptedOutput1: uint8ArrayToBase64(encryptedOutput1),
 			encryptedOutput2: uint8ArrayToBase64(encryptedOutput2),
 			fee: fee_amount,
-			lookupTableAddress: altAddress ? altAddress.toString() : '',
+			lookupTableAddress: altAddress
+				? altAddress.toString()
+				: "",
 		};
 
 		// Check if root changed before submitting transaction
 		try {
-			const updatedData = await queryRemoteTreeState(relayerUrl);
+			const updatedData =
+				await queryRemoteTreeState(relayerUrl);
 			if (updatedData.root !== root) {
 				warn(
-					"Root changed before transaction submission, retrying with updated state..."
+					"Root changed before transaction submission, retrying with updated state...",
 				);
 
 				// Recursively call withdrawSpl again with updated state
@@ -897,7 +990,7 @@ export async function withdrawSpl(
 				ErrorCodes.ROOT_VERIFICATION_FAILED,
 				"Merkle root changed during transaction preparation. This usually means the tree was updated by another transaction.",
 				{ retryCount, maxRetries },
-				err instanceof Error ? err : undefined
+				err instanceof Error ? err : undefined,
 			);
 		}
 
@@ -949,34 +1042,68 @@ export async function withdrawSpl(
 				let treeStateMatches = false;
 
 				while (attempts < maxPollingAttempts) {
-					const updatedTreeState = await queryRemoteTreeState(relayerUrl);
+					const updatedTreeState =
+						await queryRemoteTreeState(
+							relayerUrl,
+						);
 
-					if (updatedTreeState.nextIndex === expectedNextIndex) {
-						log("Withdrawal complete. Change UTXO added to Merkle tree.");
+					if (
+						updatedTreeState.nextIndex ===
+						expectedNextIndex
+					) {
+						log(
+							"Withdrawal complete. Change UTXO added to Merkle tree.",
+						);
 						treeStateMatches = true;
 						break;
-					} else if (updatedTreeState.nextIndex > expectedNextIndex) {
+					} else if (
+						updatedTreeState.nextIndex >
+						expectedNextIndex
+					) {
 						// Tree progressed beyond our expected index - our UTXOs are definitely in
-						log(`Tree progressed beyond expected index (expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex}). Change UTXO confirmed in tree.`);
+						log(
+							`Tree progressed beyond expected index (expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex}). Change UTXO confirmed in tree.`,
+						);
 						treeStateMatches = true;
 						break;
 					} else {
 						// Tree hasn't caught up yet
 						attempts++;
-						if (attempts < maxPollingAttempts) {
-							warn(`[SDK WARNING] Tree index mismatch: expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex} - retrying (${attempts}/${maxPollingAttempts})...`);
-							await new Promise(resolve => setTimeout(resolve, pollingIntervalMs));
+						if (
+							attempts <
+							maxPollingAttempts
+						) {
+							warn(
+								`[SDK WARNING] Tree index mismatch: expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex} - retrying (${attempts}/${maxPollingAttempts})...`,
+							);
+							await new Promise(
+								(resolve) =>
+									setTimeout(
+										resolve,
+										pollingIntervalMs,
+									),
+							);
 						}
 					}
 				}
 
 				if (!treeStateMatches) {
-					const finalTreeState = await queryRemoteTreeState(relayerUrl);
-					warn(`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}. Change UTXO may not be immediately available.`);
+					const finalTreeState =
+						await queryRemoteTreeState(
+							relayerUrl,
+						);
+					warn(
+						`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}. Change UTXO may not be immediately available.`,
+					);
 				}
 			} catch (err) {
-				error("Failed to verify tree state after withdrawal:", err);
-				warn(`[SDK WARNING] Could not verify change UTXO was indexed. Balance may not be immediately available.`);
+				error(
+					"Failed to verify tree state after withdrawal:",
+					err,
+				);
+				warn(
+					`[SDK WARNING] Could not verify change UTXO was indexed. Balance may not be immediately available.`,
+				);
 			}
 
 			return { isPartial, success: true, signature };
@@ -1024,7 +1151,7 @@ export async function withdrawSpl(
 			throw new TransactionError(
 				ErrorCodes.NULLIFIER_ALREADY_USED,
 				"One or more UTXOs have already been spent. Please refresh your balance.",
-				{ error: errorInfo.message }
+				{ error: errorInfo.message },
 			);
 		}
 
@@ -1033,7 +1160,7 @@ export async function withdrawSpl(
 			throw new ValidationError(
 				ErrorCodes.INSUFFICIENT_BALANCE,
 				"Insufficient funds to complete the SPL withdrawal. Check your balance and try again.",
-				{ error: errorInfo.message }
+				{ error: errorInfo.message },
 			);
 		}
 
@@ -1077,7 +1204,10 @@ export async function withdrawSpl(
 		}
 
 		// Log full error before throwing
-		error(` SPL withdrawal failed after ${maxRetries} retries:`, err);
+		error(
+			` SPL withdrawal failed after ${maxRetries} retries:`,
+			err,
+		);
 		error(`Full error details:\n${serializeError(err)}`);
 		throw err;
 	}

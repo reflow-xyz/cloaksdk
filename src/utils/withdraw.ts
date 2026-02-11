@@ -31,7 +31,7 @@ import type { Signed } from "./getAccountSign";
 import type { StatusCallback } from "../types/internal";
 import { log, warn, error as error, serializeError } from "./logger";
 import { getExtDataHash } from "./getExtDataHash";
-import { getMyUtxos, isUtxoSpent } from "./getMyUtxos";
+import { getMyUtxos } from "./getMyUtxos";
 import {
 	validateWithdrawalAmount,
 	validatePublicKey,
@@ -39,29 +39,56 @@ import {
 	validateTransactionSize,
 	parseTransactionError,
 } from "./validation";
-import { ErrorCodes, ValidationError, NetworkError, TransactionError } from '../errors';
+import {
+	ErrorCodes,
+	ValidationError,
+	NetworkError,
+	TransactionError,
+} from "../errors";
 import { fetchWithRetry } from "./fetchWithRetry";
 // relayer API endpoint
 
-// Function to query remote tree state from relayer API
+// Query relayer tx preparation state in one call.
 async function queryRemoteTreeState(relayerUrl: string): Promise<{
 	root: string;
 	nextIndex: number;
 }> {
 	try {
-		const response = await fetchWithRetry(
+		const prepareResponse = await fetchWithRetry(
+			`${relayerUrl}/tx/prepare`,
+			undefined,
+			3,
+		);
+		if (prepareResponse.ok) {
+			const data = (await prepareResponse.json()) as {
+				root: string;
+				nextIndex: number;
+			};
+			log(`Fetched root from API: ${data.root}`);
+			log(`Fetched nextIndex from API: ${data.nextIndex}`);
+			return data;
+		}
+	} catch {
+		// Backwards compatibility fallback below.
+	}
+
+	try {
+		const fallbackResponse = await fetchWithRetry(
 			`${relayerUrl}/merkle/root`,
 			undefined,
 			3,
 		);
-		if (!response.ok) {
+		if (!fallbackResponse.ok) {
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
-				`Failed to fetch Merkle root and nextIndex: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayerUrl}/merkle/root`, statusCode: response.status }
+				`Failed to fetch Merkle root and nextIndex: ${fallbackResponse.status} ${fallbackResponse.statusText}`,
+				{
+					endpoint: `${relayerUrl}/merkle/root`,
+					statusCode: fallbackResponse.status,
+				},
 			);
 		}
-		const data = (await response.json()) as {
+		const data = (await fallbackResponse.json()) as {
 			root: string;
 			nextIndex: number;
 		};
@@ -76,7 +103,10 @@ async function queryRemoteTreeState(relayerUrl: string): Promise<{
 
 // Function to fetch Merkle proof from API for a given commitment
 // Returns proof along with the root it was generated from to ensure consistency
-async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise<{
+async function fetchMerkleProof(
+	commitment: string,
+	relayerUrl: string,
+): Promise<{
 	pathElements: string[];
 	pathIndices: number[];
 	root: string;
@@ -93,7 +123,10 @@ async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle proof: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayerUrl}/merkle/proof/${commitment}`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/merkle/proof/${commitment}`,
+					statusCode: response.status,
+				},
 			);
 		}
 		const data = (await response.json()) as {
@@ -119,13 +152,18 @@ async function fetchMerkleProof(commitment: string, relayerUrl: string): Promise
 async function fetchMerkleProofs(
 	commitments: string[],
 	relayerUrl: string,
-): Promise<Map<string, {
-	pathElements: string[];
-	pathIndices: number[];
-	root: string;
-	nextIndex: number;
-	index: number;
-}>> {
+): Promise<
+	Map<
+		string,
+		{
+			pathElements: string[];
+			pathIndices: number[];
+			root: string;
+			nextIndex: number;
+			index: number;
+		}
+	>
+> {
 	if (commitments.length === 0) {
 		return new Map();
 	}
@@ -146,7 +184,10 @@ async function fetchMerkleProofs(
 			throw new NetworkError(
 				ErrorCodes.API_FETCH_FAILED,
 				`Failed to fetch Merkle proofs: ${response.status} ${response.statusText}`,
-				{ endpoint: `${relayerUrl}/merkle/proofs`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/merkle/proofs`,
+					statusCode: response.status,
+				},
 			);
 		}
 
@@ -163,16 +204,24 @@ async function fetchMerkleProofs(
 			}>;
 		};
 
-		const map = new Map<string, {
-			pathElements: string[];
-			pathIndices: number[];
-			root: string;
-			nextIndex: number;
-			index: number;
-		}>();
+		const map = new Map<
+			string,
+			{
+				pathElements: string[];
+				pathIndices: number[];
+				root: string;
+				nextIndex: number;
+				index: number;
+			}
+		>();
 
 		for (const result of data.results) {
-			if (result.success && result.pathElements && result.pathIndices && result.index !== undefined) {
+			if (
+				result.success &&
+				result.pathElements &&
+				result.pathIndices &&
+				result.index !== undefined
+			) {
 				map.set(result.commitment, {
 					pathElements: result.pathElements,
 					pathIndices: result.pathIndices,
@@ -208,11 +257,122 @@ function findNullifierPDAs(proof: any) {
 		PROGRAM_ID,
 	);
 
-	return { nullifier0PDA, nullifier1PDA };
+	const [nullifier2PDA] = PublicKey.findProgramAddressSync(
+		[
+			Buffer.from("nullifier0"),
+			Buffer.from(proof.inputNullifiers[1]),
+		],
+		PROGRAM_ID,
+	);
+
+	const [nullifier3PDA] = PublicKey.findProgramAddressSync(
+		[
+			Buffer.from("nullifier1"),
+			Buffer.from(proof.inputNullifiers[0]),
+		],
+		PROGRAM_ID,
+	);
+
+	return { nullifier0PDA, nullifier1PDA, nullifier2PDA, nullifier3PDA };
+}
+
+async function preflightNullifierPDAs(
+	connection: Connection,
+	nullifier0PDA: PublicKey,
+	nullifier1PDA: PublicKey,
+	nullifier2PDA: PublicKey,
+	nullifier3PDA: PublicKey,
+): Promise<void> {
+	const accountInfos = await connection.getMultipleAccountsInfo([
+		nullifier0PDA,
+		nullifier1PDA,
+		nullifier2PDA,
+		nullifier3PDA,
+	]);
+
+	const [n0, n1, n2, n3] = accountInfos;
+	if (n0 || n1 || n2 || n3) {
+		throw new ValidationError(
+			ErrorCodes.NULLIFIER_ALREADY_USED,
+			"Nullifier preflight failed: one or more nullifier PDAs already exist",
+			{
+				nullifier0Exists: !!n0,
+				nullifier1Exists: !!n1,
+				nullifier2Exists: !!n2,
+				nullifier3Exists: !!n3,
+				nullifier0PDA: nullifier0PDA.toBase58(),
+				nullifier1PDA: nullifier1PDA.toBase58(),
+				nullifier2PDA: nullifier2PDA.toBase58(),
+				nullifier3PDA: nullifier3PDA.toBase58(),
+			},
+		);
+	}
+}
+
+async function preflightNullifiersWithRelayer(
+	relayerUrl: string,
+	nullifierHexes: string[],
+): Promise<void> {
+	const response = await fetchWithRetry(
+		`${relayerUrl}/nullifiers/check`,
+		{
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ nullifiers: nullifierHexes }),
+		},
+		3,
+	);
+
+	if (!response.ok) {
+		throw new NetworkError(
+			ErrorCodes.API_FETCH_FAILED,
+			`Failed nullifier preflight check: ${response.status} ${response.statusText}`,
+			{
+				endpoint: `${relayerUrl}/nullifiers/check`,
+				statusCode: response.status,
+			},
+		);
+	}
+
+	const payload = (await response.json()) as {
+		success?: boolean;
+		results?: Array<{ nullifier: string; spent: boolean }>;
+		nullifiers?: Record<string, boolean>;
+	};
+
+	if (payload.success === false) {
+		throw new ValidationError(
+			ErrorCodes.NULLIFIER_ALREADY_USED,
+			"Nullifier preflight failed: relayer rejected nullifier check request.",
+		);
+	}
+
+	const spentFromResults = (payload.results || [])
+		.filter((r) => r.spent)
+		.map((r) => r.nullifier);
+	const spentFromMap = Object.entries(payload.nullifiers || {})
+		.filter(([, spent]) => spent)
+		.map(([nullifier]) => nullifier);
+	const spentNullifiers = Array.from(
+		new Set([...spentFromResults, ...spentFromMap]),
+	);
+
+	if (spentNullifiers.length > 0) {
+		throw new ValidationError(
+			ErrorCodes.NULLIFIER_ALREADY_USED,
+			"Nullifier preflight failed: one or more input nullifiers are already spent.",
+			{ spentNullifiers },
+		);
+	}
 }
 
 // Function to submit withdraw request to relayer backend
-async function submitWithdrawTorelayer(params: any, relayerUrl: string): Promise<string> {
+async function submitWithdrawTorelayer(
+	params: any,
+	relayerUrl: string,
+): Promise<string> {
 	try {
 		log("Submitting withdraw request to relayer backend...");
 
@@ -248,26 +408,33 @@ async function submitWithdrawTorelayer(params: any, relayerUrl: string): Promise
 			}
 
 			let errorMsg: string;
-			if (typeof errorData.error === 'string') {
+			if (typeof errorData.error === "string") {
 				errorMsg = errorData.error;
 			} else if (errorData.error) {
-				errorMsg = JSON.stringify(errorData.error, (_key, value) => {
-					if (value instanceof Error) {
-						return {
-							name: value.name,
-							message: value.message,
-							stack: value.stack
-						};
-					}
-					return value;
-				}, 2);
+				errorMsg = JSON.stringify(
+					errorData.error,
+					(_key, value) => {
+						if (value instanceof Error) {
+							return {
+								name: value.name,
+								message: value.message,
+								stack: value.stack,
+							};
+						}
+						return value;
+					},
+					2,
+				);
 			} else {
 				errorMsg = JSON.stringify(errorData, null, 2);
 			}
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`Withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayerUrl}/withdraw`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/withdraw`,
+					statusCode: response.status,
+				},
 			);
 		}
 
@@ -314,21 +481,32 @@ async function submitDelayedWithdrawTorelayer(
 				const errorData = (await response.json()) as {
 					error?: any;
 				};
-				if (typeof errorData.error === 'string') {
+				if (typeof errorData.error === "string") {
 					errorMsg = errorData.error;
 				} else if (errorData.error) {
-					errorMsg = JSON.stringify(errorData.error, (_key, value) => {
-						if (value instanceof Error) {
-							return {
-								name: value.name,
-								message: value.message,
-								stack: value.stack
-							};
-						}
-						return value;
-					}, 2);
+					errorMsg = JSON.stringify(
+						errorData.error,
+						(_key, value) => {
+							if (
+								value instanceof
+								Error
+							) {
+								return {
+									name: value.name,
+									message: value.message,
+									stack: value.stack,
+								};
+							}
+							return value;
+						},
+						2,
+					);
 				} else {
-					errorMsg = JSON.stringify(errorData, null, 2);
+					errorMsg = JSON.stringify(
+						errorData,
+						null,
+						2,
+					);
 				}
 			} catch {
 				errorMsg = await response.text();
@@ -336,7 +514,10 @@ async function submitDelayedWithdrawTorelayer(
 			throw new NetworkError(
 				ErrorCodes.RELAYER_ERROR,
 				`Delayed withdraw request failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayerUrl}/withdraw/delayed`, statusCode: response.status }
+				{
+					endpoint: `${relayerUrl}/withdraw/delayed`,
+					statusCode: response.status,
+				},
 			);
 		}
 
@@ -375,7 +556,9 @@ export async function withdraw(
 	maxRetries: number = 3,
 	retryCount: number = 0,
 	utxoWalletSigned?: Signed, // Optional: different wallet's signature for UTXO keypair derivation
-	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
+	utxoWalletSignTransaction?: (
+		tx: VersionedTransaction,
+	) => Promise<VersionedTransaction>, // Optional: signing callback for UTXO wallet
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
@@ -417,14 +600,12 @@ export async function withdraw(
 	if (!altAddress) {
 		throw new ValidationError(
 			ErrorCodes.INVALID_CONFIGURATION,
-			"altAddress is required for withdrawal transactions"
+			"altAddress is required for withdrawal transactions",
 		);
 	}
 
-	await useExistingALT(
-		connection,
-		altAddress,
-	);
+	await useExistingALT(connection, altAddress);
+	let attemptedInputCommitments: string[] = [];
 	try {
 		// Initialize the light protocol hasher
 		const lightWasm = hasher;
@@ -459,14 +640,19 @@ export async function withdraw(
 			await queryRemoteTreeState(relayerUrl);
 
 		// Determine which wallet signature to use for UTXO derivation
-		const utxoSignature = utxoWalletSigned ? utxoWalletSigned.signature : signed.signature;
+		const utxoSignature = utxoWalletSigned
+			? utxoWalletSigned.signature
+			: signed.signature;
 
 		// Create encryption service for UTXO derivation (may use different wallet)
 		const utxoEncryptionService = new EncryptionService();
-		utxoEncryptionService.deriveEncryptionKeyFromSignature(utxoSignature);
+		utxoEncryptionService.deriveEncryptionKeyFromSignature(
+			utxoSignature,
+		);
 
 		// Generate a deterministic private key derived from the UTXO wallet keypair
-		const utxoPrivateKey = utxoEncryptionService.deriveUtxoPrivateKey();
+		const utxoPrivateKey =
+			utxoEncryptionService.deriveUtxoPrivateKey();
 
 		// Create a UTXO keypair that will be used for all inputs and outputs
 		const utxoKeypair = new UtxoKeypair(utxoPrivateKey, lightWasm);
@@ -476,7 +662,9 @@ export async function withdraw(
 
 		if (providedUtxos) {
 			// Use the provided UTXOs (for batch withdrawals)
-			log(`[SDK] Using ${providedUtxos.length} provided UTXOs`);
+			log(
+				`[SDK] Using ${providedUtxos.length} provided UTXOs`,
+			);
 			unspentUtxos = providedUtxos;
 		} else {
 			// Fetch existing UTXOs for this UTXO wallet (may be different from transaction wallet)
@@ -500,15 +688,8 @@ export async function withdraw(
 					"11111111111111111111111111111112",
 			);
 
-			// Check which SOL UTXOs are unspent
-			const utxoSpentStatuses = await Promise.all(
-				solUtxos.map((utxo) => isUtxoSpent(connection, utxo)),
-			);
-
-			// Filter to only include unspent SOL UTXOs
-			unspentUtxos = solUtxos.filter(
-				(_, index) => !utxoSpentStatuses[index],
-			);
+			// getMyUtxos already performs batched spent nullifier filtering.
+			unspentUtxos = solUtxos;
 		}
 
 		// Calculate total unspent UTXO balance
@@ -518,14 +699,15 @@ export async function withdraw(
 		);
 
 		if (unspentUtxos.length < 1) {
-			const errorMsg = "Need at least 1 unspent UTXO to perform a withdrawal. Your balance may not have been indexed yet by the relayer.";
+			const errorMsg =
+				"Need at least 1 unspent UTXO to perform a withdrawal. Your balance may not have been indexed yet by the relayer.";
 			error(` ${errorMsg}`);
 
 			// Throw error to trigger retry logic
 			throw new ValidationError(
 				ErrorCodes.NO_UNSPENT_UTXOS,
 				errorMsg,
-				{ retryCount, maxRetries }
+				{ retryCount, maxRetries },
 			);
 		}
 
@@ -548,91 +730,96 @@ export async function withdraw(
 		unspentUtxos.sort((a, b) => b.amount.cmp(a.amount));
 
 		// Check if we need more than 2 UTXOs for this withdrawal
-		const totalNeeded = new BN(amount_in_lamports).add(new BN(fee_amount_in_lamports));
-		const firstTwoTotal = unspentUtxos.length >= 2
-			? unspentUtxos[0].amount.add(unspentUtxos[1].amount)
-			: unspentUtxos[0].amount;
+		const totalNeeded = new BN(amount_in_lamports).add(
+			new BN(fee_amount_in_lamports),
+		);
+		const firstTwoTotal =
+			unspentUtxos.length >= 2
+				? unspentUtxos[0].amount.add(
+						unspentUtxos[1].amount,
+					)
+				: unspentUtxos[0].amount;
 
 		// If we need >2 UTXOs, use batch withdrawal logic
-		if (firstTwoTotal.lt(totalNeeded) && unspentUtxos.length > 2) {
-			log(`[SDK] Need more than 2 UTXOs for withdrawal (have ${unspentUtxos.length} UTXOs), using batch withdrawal...`);
+		// if (firstTwoTotal.lt(totalNeeded) && unspentUtxos.length > 2) {
+		// 	log(`[SDK] Need more than 2 UTXOs for withdrawal (have ${unspentUtxos.length} UTXOs), using batch withdrawal...`);
 
-			// Import batch withdrawal utilities
-			const { planBatchWithdrawals } = await import("./batch-withdraw.js");
+		// 	// Import batch withdrawal utilities
+		// 	const { planBatchWithdrawals } = await import("./batch-withdraw.js");
 
-			// Plan the batch withdrawals
-			const plan = planBatchWithdrawals(
-				amount_in_lamports,
-				WITHDRAW_FEE_RATE,
-				unspentUtxos,
-			);
+		// 	// Plan the batch withdrawals
+		// 	const plan = planBatchWithdrawals(
+		// 		amount_in_lamports,
+		// 		WITHDRAW_FEE_RATE,
+		// 		unspentUtxos,
+		// 	);
 
-			if (!plan || plan.withdrawals.length === 0) {
-				throw new ValidationError(
-					ErrorCodes.INVALID_STATE,
-					"Unable to plan batch withdrawals with available UTXOs"
-				);
-			}
+		// 	if (!plan || plan.withdrawals.length === 0) {
+		// 		throw new ValidationError(
+		// 			ErrorCodes.INVALID_STATE,
+		// 			"Unable to plan batch withdrawals with available UTXOs"
+		// 		);
+		// 	}
 
-			log(`[SDK] Executing ${plan.withdrawals.length} batch withdrawals...`);
-			const signatures: string[] = [];
-			let totalWithdrawn = 0;
+		// 	log(`[SDK] Executing ${plan.withdrawals.length} batch withdrawals...`);
+		// 	const signatures: string[] = [];
+		// 	let totalWithdrawn = 0;
 
-			// Execute each withdrawal sequentially to avoid conflicts
-			for (let i = 0; i < plan.withdrawals.length; i++) {
-				const withdrawal = plan.withdrawals[i];
-				const amountInSol = withdrawal.amount / LAMPORTS_PER_SOL;
+		// 	// Execute each withdrawal sequentially to avoid conflicts
+		// 	for (let i = 0; i < plan.withdrawals.length; i++) {
+		// 		const withdrawal = plan.withdrawals[i];
+		// 		const amountInSol = withdrawal.amount / LAMPORTS_PER_SOL;
 
-				setStatus?.(`Processing withdrawal ${i + 1}/${plan.withdrawals.length}...`);
+		// 		setStatus?.(`Processing withdrawal ${i + 1}/${plan.withdrawals.length}...`);
 
-				// Recursively call withdraw with the specific UTXOs
-				const result = await withdraw(
-					recipient_address,
-					amountInSol,
-					signed,
-					connection,
-					relayerUrl,
-					setStatus,
-					hasher,
-					delayMinutes,
-					maxRetries,
-					retryCount,
-					utxoWalletSigned,
-					utxoWalletSignTransaction,
-					withdrawal.utxos, // Provide specific UTXOs for this withdrawal
-					circuitPath,
-					altAddress,
-				);
+		// 		// Recursively call withdraw with the specific UTXOs
+		// 		const result = await withdraw(
+		// 			recipient_address,
+		// 			amountInSol,
+		// 			signed,
+		// 			connection,
+		// 			relayerUrl,
+		// 			setStatus,
+		// 			hasher,
+		// 			delayMinutes,
+		// 			maxRetries,
+		// 			retryCount,
+		// 			utxoWalletSigned,
+		// 			utxoWalletSignTransaction,
+		// 			withdrawal.utxos, // Provide specific UTXOs for this withdrawal
+		// 			circuitPath,
+		// 			altAddress,
+		// 		);
 
-				if (result.success && result.signature) {
-					signatures.push(result.signature);
-					totalWithdrawn += withdrawal.amount;
-				} else {
-					warn(`[SDK WARNING] Batch withdrawal ${i + 1} failed: ${result.error}`);
-				}
+		// 		if (result.success && result.signature) {
+		// 			signatures.push(result.signature);
+		// 			totalWithdrawn += withdrawal.amount;
+		// 		} else {
+		// 			warn(`[SDK WARNING] Batch withdrawal ${i + 1} failed: ${result.error}`);
+		// 		}
 
-				// Small delay between withdrawals
-				if (i < plan.withdrawals.length - 1) {
-					await new Promise(resolve => setTimeout(resolve, 500));
-				}
-			}
+		// 		// Small delay between withdrawals
+		// 		if (i < plan.withdrawals.length - 1) {
+		// 			await new Promise(resolve => setTimeout(resolve, 500));
+		// 		}
+		// 	}
 
-			if (signatures.length === 0) {
-				throw new NetworkError(
-					ErrorCodes.TRANSACTION_FAILED,
-					"All batch withdrawals failed"
-				);
-			}
+		// 	if (signatures.length === 0) {
+		// 		throw new NetworkError(
+		// 			ErrorCodes.TRANSACTION_FAILED,
+		// 			"All batch withdrawals failed"
+		// 		);
+		// 	}
 
-			log(`[SDK] Batch withdrawal complete: ${signatures.length}/${plan.withdrawals.length} successful`);
+		// 	log(`[SDK] Batch withdrawal complete: ${signatures.length}/${plan.withdrawals.length} successful`);
 
-			return {
-				isPartial: totalWithdrawn < amount_in_lamports,
-				success: true,
-				signature: signatures[0], // First signature for backward compatibility
-				signatures: signatures, // All signatures
-			};
-		}
+		// 	return {
+		// 		isPartial: totalWithdrawn < amount_in_lamports,
+		// 		success: true,
+		// 		signature: signatures[0], // First signature for backward compatibility
+		// 		signatures: signatures, // All signatures
+		// 	};
+		// }
 
 		// Normal withdrawal with up to 2 UTXOs
 		// Use the largest UTXO as first input, and either second largest UTXO or dummy UTXO as second input
@@ -645,7 +832,7 @@ export async function withdraw(
 						lightWasm,
 						// Don't specify keypair - use random to avoid nullifier collisions
 						amount: new BN("0"),
-				  });
+					});
 
 		// Lock the UTXOs we're about to use
 		const utxosToLock = [firstInput];
@@ -669,7 +856,7 @@ export async function withdraw(
 		if (!locked) {
 			throw new ValidationError(
 				ErrorCodes.INVALID_STATE,
-				"Could not acquire locks on UTXOs. They may be in use by another operation."
+				"Could not acquire locks on UTXOs. They may be in use by another operation.",
 			);
 		}
 
@@ -680,6 +867,16 @@ export async function withdraw(
 		// });
 
 		const inputs = [firstInput, secondInput];
+		attemptedInputCommitments = (
+			await Promise.all(
+				inputs.map(async (utxo) => {
+					if (utxo.amount.eq(new BN(0))) {
+						return null;
+					}
+					return utxo.getCommitment();
+				}),
+			)
+		).filter((c): c is string => !!c);
 
 		// Validate transaction size
 		validateTransactionSize({
@@ -695,16 +892,17 @@ export async function withdraw(
 		if (totalInputAmount.toNumber() === 0) {
 			throw new ValidationError(
 				ErrorCodes.INSUFFICIENT_BALANCE,
-				"No balance available for withdrawal"
+				"No balance available for withdrawal",
 			);
 		}
 
 		// Validate sufficient balance for withdrawal + fees
-		const totalRequired = amount_in_lamports + fee_amount_in_lamports;
+		const totalRequired =
+			amount_in_lamports + fee_amount_in_lamports;
 		if (totalInputAmount.lt(new BN(totalRequired))) {
 			throw new ValidationError(
 				ErrorCodes.INSUFFICIENT_BALANCE,
-				`Insufficient balance for withdrawal. Requested: ${amount_in_lamports / 1e9} SOL (+ ${fee_amount_in_lamports / 1e9} SOL fee = ${totalRequired / 1e9} SOL total), Available: ${totalInputAmount.toNumber() / 1e9} SOL`
+				`Insufficient balance for withdrawal. Requested: ${amount_in_lamports / 1e9} SOL (+ ${fee_amount_in_lamports / 1e9} SOL fee = ${totalRequired / 1e9} SOL total), Available: ${totalInputAmount.toNumber() / 1e9} SOL`,
 			);
 		}
 
@@ -722,19 +920,30 @@ export async function withdraw(
 			}),
 		);
 
-		const realCommitments = commitments.filter((c): c is string => !!c);
-		let proofMap = new Map<string, {
-			pathElements: string[];
-			pathIndices: number[];
-			root: string;
-			nextIndex: number;
-			index: number;
-		}>();
+		const realCommitments = commitments.filter(
+			(c): c is string => !!c,
+		);
+		let proofMap = new Map<
+			string,
+			{
+				pathElements: string[];
+				pathIndices: number[];
+				root: string;
+				nextIndex: number;
+				index: number;
+			}
+		>();
 
 		if (realCommitments.length > 1) {
-			proofMap = await fetchMerkleProofs(realCommitments, relayerUrl);
+			proofMap = await fetchMerkleProofs(
+				realCommitments,
+				relayerUrl,
+			);
 		} else if (realCommitments.length === 1) {
-			const proof = await fetchMerkleProof(realCommitments[0], relayerUrl);
+			const proof = await fetchMerkleProof(
+				realCommitments[0],
+				relayerUrl,
+			);
 			proofMap.set(realCommitments[0], proof);
 		}
 
@@ -749,9 +958,9 @@ export async function withdraw(
 						).fill("0"),
 					],
 					pathIndices:
-						Array(
-							MERKLE_TREE_DEPTH,
-						).fill(0),
+						Array(MERKLE_TREE_DEPTH).fill(
+							0,
+						),
 					index: 0,
 					root: "",
 					nextIndex: 0,
@@ -764,7 +973,9 @@ export async function withdraw(
 				throw new NetworkError(
 					ErrorCodes.API_FETCH_FAILED,
 					`Missing Merkle proof for commitment ${commitment}`,
-					{ endpoint: `${relayerUrl}/merkle/proofs` }
+					{
+						endpoint: `${relayerUrl}/merkle/proofs`,
+					},
 				);
 			}
 			return proof;
@@ -896,9 +1107,37 @@ export async function withdraw(
 			outputCommitments: [inputsInBytes[5], inputsInBytes[6]],
 		};
 
+		const inputNullifier0Hex = Buffer.from(
+			proofToSubmit.inputNullifiers[0],
+		).toString("hex");
+		const inputNullifier1Hex = Buffer.from(
+			proofToSubmit.inputNullifiers[1],
+		).toString("hex");
+		if (inputNullifier0Hex === inputNullifier1Hex) {
+			throw new ValidationError(
+				ErrorCodes.NULLIFIER_ALREADY_USED,
+				"Invalid proof inputs: duplicate input nullifiers.",
+			);
+		}
+		await preflightNullifiersWithRelayer(relayerUrl, [
+			inputNullifier0Hex,
+			inputNullifier1Hex,
+		]);
+
 		// Find PDAs for nullifiers
-		const { nullifier0PDA, nullifier1PDA } =
-			findNullifierPDAs(proofToSubmit);
+		const {
+			nullifier0PDA,
+			nullifier1PDA,
+			nullifier2PDA,
+			nullifier3PDA,
+		} = findNullifierPDAs(proofToSubmit);
+		await preflightNullifierPDAs(
+			connection,
+			nullifier0PDA,
+			nullifier1PDA,
+			nullifier2PDA,
+			nullifier3PDA,
+		);
 
 		// Serialize the proof and extData
 		const serializedProof = serializeProofAndExtData(
@@ -925,10 +1164,11 @@ export async function withdraw(
 
 		// Check if root changed before submitting transaction
 		try {
-			const updatedData = await queryRemoteTreeState(relayerUrl);
+			const updatedData =
+				await queryRemoteTreeState(relayerUrl);
 			if (updatedData.root !== root) {
 				warn(
-					"Root changed before transaction submission, retrying with updated state..."
+					"Root changed before transaction submission, retrying with updated state...",
 				);
 
 				// Recursively call withdraw again with updated state
@@ -957,9 +1197,8 @@ export async function withdraw(
 
 			// Unlock UTXOs if we locked any
 			if (lockedCommitments.length > 0) {
-				const { getUtxoLockService } = await import(
-					"./utxoLock"
-				);
+				const { getUtxoLockService } =
+					await import("./utxoLock");
 				const lockService = getUtxoLockService();
 				lockService.unlock(lockedCommitments);
 			}
@@ -968,7 +1207,7 @@ export async function withdraw(
 				ErrorCodes.ROOT_VERIFICATION_FAILED,
 				"Merkle root changed during transaction preparation. This usually means the tree was updated by another transaction.",
 				{ retryCount, maxRetries },
-				err instanceof Error ? err : undefined
+				err instanceof Error ? err : undefined,
 			);
 		}
 
@@ -990,9 +1229,8 @@ export async function withdraw(
 
 			// Unlock UTXOs if we locked any
 			if (lockedCommitments.length > 0) {
-				const { getUtxoLockService } = await import(
-					"./utxoLock"
-				);
+				const { getUtxoLockService } =
+					await import("./utxoLock");
 				const lockService = getUtxoLockService();
 				lockService.unlock(lockedCommitments);
 			}
@@ -1029,41 +1267,74 @@ export async function withdraw(
 				let treeStateMatches = false;
 
 				while (attempts < maxPollingAttempts) {
-					const updatedTreeState = await queryRemoteTreeState(relayerUrl);
+					const updatedTreeState =
+						await queryRemoteTreeState(
+							relayerUrl,
+						);
 
-					if (updatedTreeState.nextIndex === expectedNextIndex) {
-						log("Withdrawal complete. Change UTXO added to Merkle tree.");
+					if (
+						updatedTreeState.nextIndex ===
+						expectedNextIndex
+					) {
+						log(
+							"Withdrawal complete. Change UTXO added to Merkle tree.",
+						);
 						treeStateMatches = true;
 						break;
-					} else if (updatedTreeState.nextIndex > expectedNextIndex) {
+					} else if (
+						updatedTreeState.nextIndex >
+						expectedNextIndex
+					) {
 						// Tree progressed beyond our expected index - our UTXOs are definitely in
-						log(`Tree progressed beyond expected index (expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex}). Change UTXO confirmed in tree.`);
+						log(
+							`Tree progressed beyond expected index (expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex}). Change UTXO confirmed in tree.`,
+						);
 						treeStateMatches = true;
 						break;
 					} else {
 						// Tree hasn't caught up yet
 						attempts++;
-						if (attempts < maxPollingAttempts) {
-							warn(`[SDK WARNING] Tree index mismatch: expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex} - retrying (${attempts}/${maxPollingAttempts})...`);
-							await new Promise(resolve => setTimeout(resolve, pollingIntervalMs));
+						if (
+							attempts <
+							maxPollingAttempts
+						) {
+							warn(
+								`[SDK WARNING] Tree index mismatch: expected ${expectedNextIndex}, got ${updatedTreeState.nextIndex} - retrying (${attempts}/${maxPollingAttempts})...`,
+							);
+							await new Promise(
+								(resolve) =>
+									setTimeout(
+										resolve,
+										pollingIntervalMs,
+									),
+							);
 						}
 					}
 				}
 
 				if (!treeStateMatches) {
-					const finalTreeState = await queryRemoteTreeState(relayerUrl);
-					warn(`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}. Change UTXO may not be immediately available.`);
+					const finalTreeState =
+						await queryRemoteTreeState(
+							relayerUrl,
+						);
+					warn(
+						`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}. Change UTXO may not be immediately available.`,
+					);
 				}
 			} catch (err) {
-				error("Failed to verify tree state after withdrawal:", err);
-				warn(`[SDK WARNING] Could not verify change UTXO was indexed. Balance may not be immediately available.`);
+				error(
+					"Failed to verify tree state after withdrawal:",
+					err,
+				);
+				warn(
+					`[SDK WARNING] Could not verify change UTXO was indexed. Balance may not be immediately available.`,
+				);
 			}
 
 			// Unlock UTXOs if we locked any
 			if (lockedCommitments.length > 0) {
-				const { getUtxoLockService } = await import(
-					"./utxoLock"
-				);
+				const { getUtxoLockService } =
+					await import("./utxoLock");
 				const lockService = getUtxoLockService();
 				lockService.unlock(lockedCommitments);
 			}
@@ -1074,9 +1345,8 @@ export async function withdraw(
 	} catch (err: any) {
 		// Unlock UTXOs if we locked any (cleanup on error)
 		if (lockedCommitments.length > 0) {
-			const { getUtxoLockService } = await import(
-				"./utxoLock"
-			);
+			const { getUtxoLockService } =
+				await import("./utxoLock");
 			const lockService = getUtxoLockService();
 			lockService.unlock(lockedCommitments);
 		}
@@ -1114,10 +1384,94 @@ export async function withdraw(
 
 		if (errorInfo.isNullifierAlreadyUsed) {
 			error(" UTXO already spent (nullifier already used)");
+			if (retryCount < maxRetries) {
+				error(
+					` Retrying withdrawal with fresh input selection to avoid stale/nullifier-colliding UTXOs (attempt ${retryCount + 1}/${maxRetries})...`,
+				);
+
+				const attemptedSet = new Set(
+					attemptedInputCommitments,
+				);
+				let nextProvidedUtxos = providedUtxos;
+				if (!nextProvidedUtxos) {
+					const refreshedUtxos = await getMyUtxos(
+						utxoWalletSigned || signed,
+						connection,
+						relayerUrl,
+						setStatus,
+						hasher,
+						true,
+					);
+					nextProvidedUtxos =
+						refreshedUtxos.filter(
+							(utxo) =>
+								utxo.amount.gt(
+									new BN(
+										0,
+									),
+								) &&
+								utxo.mintAddress ===
+									"11111111111111111111111111111112",
+						);
+				}
+
+				if (
+					attemptedSet.size > 0 &&
+					nextProvidedUtxos
+				) {
+					const filtered = await Promise.all(
+						nextProvidedUtxos.map(
+							async (utxo) => {
+								if (
+									utxo.amount.eq(
+										new BN(
+											0,
+										),
+									)
+								) {
+									return {
+										keep: false,
+										utxo,
+									};
+								}
+								const commitment =
+									await utxo.getCommitment();
+								return {
+									keep: !attemptedSet.has(
+										commitment,
+									),
+									utxo,
+								};
+							},
+						),
+					);
+					nextProvidedUtxos = filtered
+						.filter((x) => x.keep)
+						.map((x) => x.utxo);
+				}
+
+				return await withdraw(
+					recipient_address,
+					amount_in_sol,
+					signed,
+					connection,
+					relayerUrl,
+					setStatus,
+					hasher,
+					delayMinutes,
+					maxRetries,
+					retryCount + 1,
+					utxoWalletSigned,
+					utxoWalletSignTransaction,
+					nextProvidedUtxos,
+					circuitPath,
+					altAddress,
+				);
+			}
 			throw new TransactionError(
 				ErrorCodes.NULLIFIER_ALREADY_USED,
 				"One or more UTXOs have already been spent. Please refresh your balance.",
-				{ error: errorInfo.message }
+				{ error: errorInfo.message },
 			);
 		}
 
@@ -1126,12 +1480,14 @@ export async function withdraw(
 			throw new ValidationError(
 				ErrorCodes.INSUFFICIENT_BALANCE,
 				"Insufficient funds to complete the withdrawal. Check your balance and try again.",
-				{ error: errorInfo.message }
+				{ error: errorInfo.message },
 			);
 		}
 
 		// Check if this is a NO_UNSPENT_UTXOS error (needs special handling with delay)
-		const isNoUtxosError = err instanceof ValidationError && err.code === ErrorCodes.NO_UNSPENT_UTXOS;
+		const isNoUtxosError =
+			err instanceof ValidationError &&
+			err.code === ErrorCodes.NO_UNSPENT_UTXOS;
 
 		// General retry for other errors
 		if (retryCount < maxRetries) {
@@ -1172,7 +1528,10 @@ export async function withdraw(
 		}
 
 		// Log full error before throwing
-		error(` SOL Withdrawal failed after ${maxRetries} retries:`, err);
+		error(
+			` SOL Withdrawal failed after ${maxRetries} retries:`,
+			err,
+		);
 		error(`Full error details:\n${serializeError(err)}`);
 		throw err;
 	}

@@ -35,33 +35,52 @@ import { ErrorCodes, ValidationError, NetworkError, TransactionError, Configurat
 import { Buffer } from "buffer";
 import { useExistingALT } from "./address_lookup_table";
 import { getExtDataHash } from "./getExtDataHash";
-import { getMyUtxos, isUtxoSpent } from "./getMyUtxos";
+import { getMyUtxos } from "./getMyUtxos";
 import { MerkleTree } from "./merkle_tree";
 import { parseProofToBytesArray, parseToBytesArray, prove } from "./prover";
-// Function to query remote tree state from relayer API
-async function queryRemoteTreeState(relayerUrl: string): Promise<{
+// Query relayer tx preparation state in one call.
+async function queryTxPrepareState(relayerUrl: string): Promise<{
 	root: string;
 	nextIndex: number;
 }> {
-	const response = await fetchWithRetry(
+	try {
+		const prepareResponse = await fetchWithRetry(
+			`${relayerUrl}/tx/prepare`,
+			undefined,
+			3,
+		);
+
+		if (prepareResponse.ok) {
+			const data = (await prepareResponse.json()) as {
+				root: string;
+				nextIndex: number;
+			};
+			return { root: data.root, nextIndex: data.nextIndex };
+		}
+	} catch {
+		// Backwards compatibility fallback below.
+	}
+
+	const fallbackResponse = await fetchWithRetry(
 		`${relayerUrl}/merkle/root`,
 		undefined,
 		3,
 	);
 
-	if (!response.ok) {
+	if (!fallbackResponse.ok) {
 		throw new NetworkError(
 			ErrorCodes.API_FETCH_FAILED,
-			`Failed to fetch Merkle root and nextIndex: ${response.status} ${response.statusText}`,
-			{ endpoint: `${relayerUrl}/merkle/root`, statusCode: response.status }
+			`Failed to fetch tx prepare state: ${fallbackResponse.status} ${fallbackResponse.statusText}`,
+			{ endpoint: `${relayerUrl}/tx/prepare`, statusCode: fallbackResponse.status }
 		);
 	}
 
-	const data = (await response.json()) as {
+	const fallbackData = (await fallbackResponse.json()) as {
 		root: string;
 		nextIndex: number;
 	};
-	return data;
+
+	return { root: fallbackData.root, nextIndex: fallbackData.nextIndex };
 }
 
 // Function to fetch Merkle proof from API for a given commitment
@@ -128,6 +147,91 @@ function findNullifierPDAs(proof: any) {
 	);
 
 	return { nullifier0PDA, nullifier1PDA, nullifier2PDA, nullifier3PDA };
+}
+
+async function preflightNullifierPDAs(
+	connection: Connection,
+	nullifier0PDA: PublicKey,
+	nullifier1PDA: PublicKey,
+	nullifier2PDA: PublicKey,
+	nullifier3PDA: PublicKey,
+): Promise<void> {
+	const accountInfos = await connection.getMultipleAccountsInfo([
+		nullifier0PDA,
+		nullifier1PDA,
+		nullifier2PDA,
+		nullifier3PDA,
+	]);
+
+	const [n0, n1, n2, n3] = accountInfos;
+	if (n0 || n1 || n2 || n3) {
+		throw new ValidationError(
+			ErrorCodes.NULLIFIER_ALREADY_USED,
+			"Nullifier preflight failed: one or more nullifier PDAs already exist",
+			{
+				nullifier0Exists: !!n0,
+				nullifier1Exists: !!n1,
+				nullifier2Exists: !!n2,
+				nullifier3Exists: !!n3,
+				nullifier0PDA: nullifier0PDA.toBase58(),
+				nullifier1PDA: nullifier1PDA.toBase58(),
+				nullifier2PDA: nullifier2PDA.toBase58(),
+				nullifier3PDA: nullifier3PDA.toBase58(),
+			},
+		);
+	}
+}
+
+async function preflightNullifiersWithRelayer(
+	relayerUrl: string,
+	nullifierHexes: string[],
+): Promise<void> {
+	const response = await fetchWithRetry(
+		`${relayerUrl}/nullifiers/check`,
+		{
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ nullifiers: nullifierHexes }),
+		},
+		3,
+	);
+
+	if (!response.ok) {
+		throw new NetworkError(
+			ErrorCodes.API_FETCH_FAILED,
+			`Failed nullifier preflight check: ${response.status} ${response.statusText}`,
+			{ endpoint: `${relayerUrl}/nullifiers/check`, statusCode: response.status },
+		);
+	}
+
+	const payload = (await response.json()) as {
+		success?: boolean;
+		results?: Array<{ nullifier: string; spent: boolean }>;
+		nullifiers?: Record<string, boolean>;
+	};
+
+	if (payload.success === false) {
+		throw new ValidationError(
+			ErrorCodes.NULLIFIER_ALREADY_USED,
+			"Nullifier preflight failed: relayer rejected nullifier check request.",
+		);
+	}
+
+	const spentFromResults = (payload.results || []).filter((r) => r.spent).map((r) => r.nullifier);
+	const spentFromMap = Object.entries(payload.nullifiers || {})
+		.filter(([, spent]) => spent)
+		.map(([nullifier]) => nullifier);
+	const spentNullifiers = Array.from(new Set([...spentFromResults, ...spentFromMap]));
+
+	if (spentNullifiers.length > 0) {
+		throw new ValidationError(
+			ErrorCodes.NULLIFIER_ALREADY_USED,
+			"Nullifier preflight failed: one or more input nullifiers are already spent.",
+			{ spentNullifiers },
+		);
+	}
 }
 
 export async function deposit(
@@ -223,7 +327,7 @@ export async function deposit(
 		let currentNextIndex: number;
 
 		try {
-			const data = await queryRemoteTreeState(relayerUrl);
+			const data = await queryTxPrepareState(relayerUrl);
 			root = data.root;
 			currentNextIndex = data.nextIndex;
 		} catch (error) {
@@ -274,15 +378,8 @@ export async function deposit(
 					"11111111111111111111111111111112",
 			);
 
-			// Check which SOL UTXOs are unspent
-			const utxoSpentStatuses = await Promise.all(
-				solUtxos.map((utxo) => isUtxoSpent(connection, utxo)),
-			);
-
-			// Filter to only include unspent SOL UTXOs
-			existingUnspentUtxos = solUtxos.filter(
-				(_utxo, index) => !utxoSpentStatuses[index],
-			);
+			// getMyUtxos already performs batched spent nullifier filtering.
+			existingUnspentUtxos = solUtxos;
 		}
 
 		// Calculate output amounts and external amount based on scenario
@@ -620,6 +717,16 @@ export async function deposit(
 			outputCommitments: [inputsInBytes[5], inputsInBytes[6]],
 		};
 
+		const inputNullifier0Hex = Buffer.from(proofToSubmit.inputNullifiers[0]).toString("hex");
+		const inputNullifier1Hex = Buffer.from(proofToSubmit.inputNullifiers[1]).toString("hex");
+		if (inputNullifier0Hex === inputNullifier1Hex) {
+			throw new ValidationError(
+				ErrorCodes.NULLIFIER_ALREADY_USED,
+				"Invalid proof inputs: duplicate input nullifiers.",
+			);
+		}
+		await preflightNullifiersWithRelayer(relayerUrl, [inputNullifier0Hex, inputNullifier1Hex]);
+
 		// Find PDAs for nullifiers
 		const {
 			nullifier0PDA,
@@ -627,6 +734,13 @@ export async function deposit(
 			nullifier2PDA,
 			nullifier3PDA,
 		} = findNullifierPDAs(proofToSubmit);
+		await preflightNullifierPDAs(
+			connection,
+			nullifier0PDA,
+			nullifier1PDA,
+			nullifier2PDA,
+			nullifier3PDA,
+		);
 
 		// Address Lookup Table for transaction size optimization
 		if (!altAddress) {
@@ -775,42 +889,6 @@ export async function deposit(
 			};
 		}
 
-		// Check if root changed before submitting transaction
-		try {
-			const updatedData = await queryRemoteTreeState(relayerUrl);
-			if (updatedData.root !== root) {
-				logError("Merkle root changed before transaction submission. Retrying with updated state.");
-
-				// Recursively call deposit again with updated state
-				return await deposit(
-					amount_in_sol,
-					signed,
-					connection,
-					relayerUrl,
-					setStatus,
-					hasher,
-					signTransaction,
-					maxRetries,
-					retryCount,
-					utxoWalletSigned,
-					utxoWalletSignTransaction,
-					circuitPath,
-					transactionIndex,
-					forceFreshDeposit,
-					buildOnly,
-					altAddress,
-				);
-			}
-		} catch (error) {
-			logError("Failed to verify Merkle root before submission.");
-			throw new TransactionError(
-				ErrorCodes.ROOT_VERIFICATION_FAILED,
-				"Merkle root changed during transaction preparation. This usually means the tree was updated by another transaction.",
-				{ retryCount, maxRetries },
-				error instanceof Error ? error : undefined
-			);
-		}
-
 		setStatus?.(`(submitting transaction to relayer...)`);
 		txid = await relayDepositTorelayer(
 			Buffer.from(serializedTx).toString("base64"),
@@ -884,7 +962,7 @@ export async function deposit(
 			let treeStateMatches = false;
 
 			while (attempts < maxPollingAttempts) {
-				const updatedTreeState = await queryRemoteTreeState(relayerUrl);
+				const updatedTreeState = await queryTxPrepareState(relayerUrl);
 
 				if (updatedTreeState.nextIndex === expectedNextIndex) {
 					log("Deposit complete. UTXOs added to Merkle tree.");
@@ -906,7 +984,7 @@ export async function deposit(
 			}
 
 			if (!treeStateMatches) {
-				const finalTreeState = await queryRemoteTreeState(relayerUrl);
+				const finalTreeState = await queryTxPrepareState(relayerUrl);
 				warn(`[SDK WARNING] Tree index mismatch after ${maxPollingAttempts} attempts: expected ${expectedNextIndex}, got ${finalTreeState.nextIndex}`);
 			}
 
@@ -974,10 +1052,40 @@ export async function deposit(
 
 		if (errorInfo.isNullifierAlreadyUsed) {
 			logError("UTXO already spent (nullifier already used).");
+			if (
+				retryCount < maxRetries &&
+				!forceFreshDeposit
+			) {
+				logError(
+					`Retrying deposit with fresh-input mode to avoid stale/consolidation nullifier collisions (attempt ${retryCount + 1}/${maxRetries}).`,
+				);
+				return await deposit(
+					amount_in_sol,
+					signed,
+					connection,
+					relayerUrl,
+					setStatus,
+					hasher,
+					signTransaction,
+					maxRetries,
+					retryCount + 1,
+					utxoWalletSigned,
+					utxoWalletSignTransaction,
+					circuitPath,
+					transactionIndex,
+					true,
+					buildOnly,
+					altAddress,
+				);
+			}
 			throw new TransactionError(
 				ErrorCodes.NULLIFIER_ALREADY_USED,
 				"One or more UTXOs have already been spent. Please refresh your balance.",
-				{ error: errorInfo.message }
+				{
+					error: errorInfo.message,
+					originalError:
+						err instanceof Error ? err.message : String(err),
+				}
 			);
 		}
 

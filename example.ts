@@ -62,7 +62,7 @@ async function main() {
 	// Setup connection
 	const connection = new Connection(
 		process.env.RPC_URL ||
-			"https://mainnet.helius-rpc.com/?api-key=17cb0ad2-833f-4962-bfbc-bfba9b2d23c1",
+			"https://mainnet.helius-rpc.com/?api-key=8cd01c14-8607-4452-b23c-46b8b2b9eaac",
 		"confirmed",
 	);
 
@@ -71,7 +71,7 @@ async function main() {
 		connection,
 		signer: new Keypair(),
 		verbose: false, // ENABLE VERBOSE LOGGING TO DEBUG
-		relayerUrl: "https://api.cloaklabs.dev",
+		relayerUrl: "http://localhost:3000",
 		// Address Lookup Table for devnet
 		// Use "G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj" for mainnet
 		// and Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9 for devnet
@@ -103,66 +103,66 @@ async function main() {
 		`[INFO] Depositing ${solDepositAmount} SOL into privacy pool...`,
 	);
 
-	try {
-		const solDepositResult = await sdk.depositSol({
-			amount: solDepositAmount,
-			onStatus: (status: string) =>
-				console.log(`[INFO] ${status}`),
-			utxoWalletSigned: signature,
-			utxoWalletSignTransaction: async (tx) => {
-				// Sign the transaction with the actual funded keypair
-				(tx as any).sign([keypair]);
-				return tx;
-			},
-		});
+	// try {
+	// 	const solDepositResult = await sdk.depositSol({
+	// 		amount: solDepositAmount,
+	// 		onStatus: (status: string) =>
+	// 			console.log(`[INFO] ${status}`),
+	// 		utxoWalletSigned: signature,
+	// 		utxoWalletSignTransaction: async (tx) => {
+	// 			// Sign the transaction with the actual funded keypair
+	// 			(tx as any).sign([keypair]);
+	// 			return tx;
+	// 		},
+	// 	});
 
-		if (!solDepositResult.success) {
-			console.error(
-				"[ERROR] SOL deposit failed:",
-				solDepositResult.error,
-			);
-			if (isCloakError(solDepositResult.error)) {
-				console.error(
-					`[ERROR] Error code: ${solDepositResult.error.code}`,
-				);
-				if (solDepositResult.error.details) {
-					console.error(
-						"[ERROR] Details:",
-						JSON.stringify(
-							solDepositResult.error
-								.details,
-							null,
-							2,
-						),
-					);
-				}
-			}
-			process.exit(1);
-		}
+	// 	if (!solDepositResult.success) {
+	// 		console.error(
+	// 			"[ERROR] SOL deposit failed:",
+	// 			solDepositResult.error,
+	// 		);
+	// 		if (isCloakError(solDepositResult.error)) {
+	// 			console.error(
+	// 				`[ERROR] Error code: ${solDepositResult.error.code}`,
+	// 			);
+	// 			if (solDepositResult.error.details) {
+	// 				console.error(
+	// 					"[ERROR] Details:",
+	// 					JSON.stringify(
+	// 						solDepositResult.error
+	// 							.details,
+	// 						null,
+	// 						2,
+	// 					),
+	// 				);
+	// 			}
+	// 		}
+	// 		process.exit(1);
+	// 	}
 
-		console.log("[INFO] SOL deposit successful");
-		console.log(
-			`[INFO] Transaction signature: ${solDepositResult.signature}`,
-		);
-		console.log(
-			`[INFO] View on explorer: https://explorer.solana.com/tx/${solDepositResult.signature}?cluster=devnet\n`,
-		);
-	} catch (error) {
-		console.error("[ERROR] SOL deposit failed with exception");
-		if (isCloakError(error)) {
-			console.error(`[ERROR] Error code: ${error.code}`);
-			console.error(`[ERROR] Message: ${error.message}`);
-			if (error.details) {
-				console.error(
-					"[ERROR] Details:",
-					JSON.stringify(error.details, null, 2),
-				);
-			}
-		} else {
-			console.error("[ERROR]", error);
-		}
-		process.exit(1);
-	}
+	// 	console.log("[INFO] SOL deposit successful");
+	// 	console.log(
+	// 		`[INFO] Transaction signature: ${solDepositResult.signature}`,
+	// 	);
+	// 	console.log(
+	// 		`[INFO] View on explorer: https://explorer.solana.com/tx/${solDepositResult.signature}?cluster=devnet\n`,
+	// 	);
+	// } catch (error) {
+	// 	console.error("[ERROR] SOL deposit failed with exception");
+	// 	if (isCloakError(error)) {
+	// 		console.error(`[ERROR] Error code: ${error.code}`);
+	// 		console.error(`[ERROR] Message: ${error.message}`);
+	// 		if (error.details) {
+	// 			console.error(
+	// 				"[ERROR] Details:",
+	// 				JSON.stringify(error.details, null, 2),
+	// 			);
+	// 		}
+	// 	} else {
+	// 		console.error("[ERROR]", error);
+	// 	}
+	// 	process.exit(1);
+	// }
 
 	// Check balance after deposit
 	const postSolDepositBalance = await sdk.getSolBalance(signature);
@@ -173,13 +173,14 @@ async function main() {
 	);
 
 	// Withdraw SOL
-	const solWithdrawAmount = 0.009; // 0.005 SOL
+	const solWithdrawAmount = 0.05; // 0.005 SOL
 	console.log(`[INFO] Withdrawing ${solWithdrawAmount} SOL...`);
 
 	try {
 		const solWithdrawResult = await sdk.withdrawSol({
 			amount: solWithdrawAmount,
-			recipientAddress: sdk.getPublicKey(), // Withdraw to self
+			recipientAddress:
+				"D6SCagpwsuUERmHgsb6m4odjPdiWxX8RBCR2qZB1SJd6", // Withdraw to self
 			onStatus: (status: string) =>
 				console.log(`[INFO] ${status}`),
 			utxoWalletSigned: signature,
