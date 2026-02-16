@@ -9,24 +9,24 @@ export function setVerbose(verbose: boolean) {
   isVerbose = verbose;
 }
 
-export function log(...args: any[]) {
+export function log(...args: unknown[]) {
   if (isVerbose) {
     console.log('[SDK]', ...args);
   }
 }
 
-export function warn(...args: any[]) {
+export function warn(...args: unknown[]) {
   if (isVerbose) {
     console.warn('[SDK WARNING]', ...args);
   }
 }
 
-export function error(...args: any[]) {
+export function error(...args: unknown[]) {
   // Always log errors
   console.error('[SDK ERROR]', ...args);
 }
 
-export function debug(...args: any[]) {
+export function debug(...args: unknown[]) {
   if (isVerbose) {
     console.log('[SDK DEBUG]', ...args);
   }
@@ -36,7 +36,7 @@ export function debug(...args: any[]) {
  * Serializes any error object to a readable string format
  * Handles complex objects, circular references, and Solana transaction errors
  */
-export function serializeError(err: any): string {
+export function serializeError(err: unknown): string {
   if (err === null || err === undefined) {
     return String(err);
   }
@@ -47,12 +47,13 @@ export function serializeError(err: any): string {
   }
 
   // If it has a message property, start with that
-  if (err.message) {
-    let result = err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    const errWithMessage = err as { message?: unknown; stack?: unknown; name?: unknown };
+    let result = String(errWithMessage.message ?? 'Unknown error');
 
     // Add stack trace if available
-    if (err.stack && isVerbose) {
-      result += `\n\nStack trace:\n${err.stack}`;
+    if (errWithMessage.stack && isVerbose) {
+      result += `\n\nStack trace:\n${String(errWithMessage.stack)}`;
     }
 
     // Try to add any additional properties
@@ -61,12 +62,13 @@ export function serializeError(err: any): string {
         .filter(key => key !== 'message' && key !== 'stack' && key !== 'name')
         .reduce((acc, key) => {
           try {
-            acc[key] = err[key];
+            const value = (err as Record<string, unknown>)[key];
+            acc[key] = value;
           } catch {
             acc[key] = '[Unable to serialize]';
           }
           return acc;
-        }, {} as Record<string, any>);
+        }, {} as Record<string, unknown>);
 
       if (Object.keys(additionalProps).length > 0) {
         result += `\n\nAdditional details:\n${JSON.stringify(additionalProps, null, 2)}`;
@@ -83,12 +85,12 @@ export function serializeError(err: any): string {
     // Try to extract all properties including non-enumerable ones
     const allProps = Object.getOwnPropertyNames(err).reduce((acc, key) => {
       try {
-        acc[key] = err[key];
+        acc[key] = (err as Record<string, unknown>)[key];
       } catch {
         acc[key] = '[Unable to serialize]';
       }
       return acc;
-    }, {} as Record<string, any>);
+    }, {} as Record<string, unknown>);
 
     return JSON.stringify(allProps, null, 2);
   } catch {

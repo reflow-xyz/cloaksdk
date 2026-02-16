@@ -1,47 +1,31 @@
-import { log, warn, error as error } from "./logger";
+import { error as error } from "./logger";
 
 import BN from "bn.js";
 
-// @ts-ignore
-import { groth16, wtns } from "snarkjs";
+import { groth16 } from "snarkjs";
 import { FIELD_SIZE } from "./constants";
 
-// @ts-ignore - ignore TypeScript errors for ffjavascript
 import { utils } from "ffjavascript";
-
-// Type definitions for external modules
-type WtnsModule = {
-	debug: (
-		input: any,
-		wasmFile: string,
-		wtnsFile: string,
-		symFile: string,
-		options: any,
-		logger: any,
-	) => Promise<void>;
-	exportJson: (wtnsFile: string) => Promise<any>;
-};
 
 type Groth16Module = {
 	fullProve: (
-		input: any,
+		input: unknown,
 		wasmFile: string,
 		zkeyFile: string,
 	) => Promise<{ proof: Proof; publicSignals: string[] }>;
 	verify: (
-		vkeyData: any,
-		publicSignals: any,
+		vkeyData: unknown,
+		publicSignals: unknown,
 		proof: Proof,
 	) => Promise<boolean>;
 };
 
 type UtilsModule = {
-	stringifyBigInts: (obj: any) => any;
-	unstringifyBigInts: (obj: any) => any;
+	stringifyBigInts: (obj: unknown) => unknown;
+	unstringifyBigInts: (obj: unknown) => unknown;
 };
 
 // Cast imported modules to their types
-const wtnsTyped = wtns as unknown as WtnsModule;
 const groth16Typed = groth16 as unknown as Groth16Module;
 const utilsTyped = utils as unknown as UtilsModule;
 
@@ -54,10 +38,6 @@ interface Proof {
 	curve: string;
 }
 
-interface ProofResult {
-	proof: Proof;
-}
-
 /**
  * Generates a ZK proof using snarkjs and formats it for use on-chain
  *
@@ -66,18 +46,15 @@ interface ProofResult {
  * @returns A proof object with formatted proof elements and public signals
  */
 async function prove(
-	input: any,
+	input: unknown,
 	keyBasePath: string,
 ): Promise<{
 	proof: Proof;
 	publicSignals: string[];
 }> {
 	try {
-		console.log('[PROVE] keyBasePath received:', keyBasePath);
 		const wasmPath = `${keyBasePath}.wasm`;
 		const zkeyPath = `${keyBasePath}.zkey`;
-		console.log('[PROVE] wasmPath:', wasmPath);
-		console.log('[PROVE] zkeyPath:', zkeyPath);
 
 		const circuitInput = utilsTyped.stringifyBigInts(input);
 
@@ -88,12 +65,14 @@ async function prove(
 		);
 
 		return { proof, publicSignals };
-	} catch (err: any) {
-		error("Proof generation failed:", err.message);
+	} catch (err: unknown) {
+		const errMessage =
+			err instanceof Error ? err.message : String(err);
+		error("Proof generation failed:", errMessage);
 
 		// Parse the error to provide context
-		if (err.message) {
-			const errorMsg = err.message;
+		if (errMessage) {
+			const errorMsg = errMessage;
 
 			// Extract template name and instance
 			const templateMatch = errorMsg.match(
@@ -130,40 +109,6 @@ async function prove(
 		throw err;
 	}
 }
-
-// log('Original proof:', JSON.stringify(proof, null, 2))
-// log('Public signals:', JSON.stringify(publicSignals, null, 2))
-
-// // Process the proof similarly to Darklake's implementation
-// const proofProc = utilsTyped.unstringifyBigInts(proof)
-// const publicSignalsUnstringified = utilsTyped.unstringifyBigInts(publicSignals)
-
-// // referencing https://github.com/darklakefi/darklake-monorepo/blob/d0357ebc791e1f369aa24309385e86b715bd2bff/web-old/lib/prepare-proof.ts#L61 for post processing
-// // Load ffjavascript curve utilities
-// // We use require instead of import due to TypeScript module issues
-// const curve = await ffjavascript.buildBn128()
-
-// // Format proof elements
-// let proofA = g1Uncompressed(curve, proofProc.pi_a)
-// proofA = await negateAndSerializeG1(curve, proofA)
-
-// const proofB = g2Uncompressed(curve, proofProc.pi_b)
-// const proofC = g1Uncompressed(curve, proofProc.pi_c)
-
-// // Format public signals
-// const formattedPublicSignals = publicSignalsUnstringified.map(
-//   (signal: any) => {
-//     return to32ByteBuffer(BigInt(signal))
-//   }
-// )
-
-// return {
-//   proofA: proofA,
-//   proofB: proofB,
-//   proofC: proofC,
-//   publicSignals: formattedPublicSignals,
-// }
-// }
 
 export function parseProofToBytesArray(
 	proof: Proof,
@@ -250,8 +195,11 @@ export function parseProofToBytesArray(
 			].flat(),
 			proofC: [mydata.pi_c[0], mydata.pi_c[1]].flat(),
 		};
-	} catch (err: any) {
-		error("Error while parsing the proof.", err.message);
+	} catch (err: unknown) {
+		error(
+			"Error while parsing the proof.",
+			err instanceof Error ? err.message : String(err),
+		);
 		throw err;
 	}
 }
@@ -275,8 +223,11 @@ export function parseToBytesArray(publicSignals: string[]): number[][] {
 		}
 
 		return publicInputsBytes;
-	} catch (err: any) {
-		error("Error while parsing public inputs.", err.message);
+	} catch (err: unknown) {
+		error(
+			"Error while parsing public inputs.",
+			err instanceof Error ? err.message : String(err),
+		);
 		throw err;
 	}
 }

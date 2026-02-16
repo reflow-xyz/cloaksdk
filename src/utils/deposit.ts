@@ -22,7 +22,7 @@ import {
 } from "./constants";
 import { EncryptionService, serializeProofAndExtData } from "./encryption";
 import type { Signed } from "./getAccountSign";
-import type { StatusCallback } from "../types/internal";
+import type { LightWasm, StatusCallback } from "../types/internal";
 import { log, warn, error as logError, serializeError } from "./logger";
 import { fetchWithRetry } from "./fetchWithRetry";
 import {
@@ -37,7 +37,10 @@ import { useExistingALT } from "./address_lookup_table";
 import { getExtDataHash } from "./getExtDataHash";
 import { getMyUtxos } from "./getMyUtxos";
 import { MerkleTree } from "./merkle_tree";
+import { deriveNullifierPdas } from "./nullifier-pdas";
 import { parseProofToBytesArray, parseToBytesArray, prove } from "./prover";
+import { postRelayerJson } from "./relayer-client";
+import { requireHasher } from "./hasher-guard";
 // Query relayer tx preparation state in one call.
 async function queryTxPrepareState(relayerUrl: string): Promise<{
 	root: string;
@@ -108,45 +111,6 @@ async function fetchMerkleProof(
 		index: number;
 	};
 	return data;
-}
-
-// Find nullifier PDAs for the given proof
-function findNullifierPDAs(proof: any) {
-	const [nullifier0PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier0"),
-			Buffer.from(proof.inputNullifiers[0]),
-		],
-		PROGRAM_ID,
-	);
-
-	const [nullifier1PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier1"),
-			Buffer.from(proof.inputNullifiers[1]),
-		],
-		PROGRAM_ID,
-	);
-
-	// nullifier2: seeds = [b"nullifier0", input_nullifiers[1]]
-	const [nullifier2PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier0"),
-			Buffer.from(proof.inputNullifiers[1]),
-		],
-		PROGRAM_ID,
-	);
-
-	// nullifier3: seeds = [b"nullifier1", input_nullifiers[0]]
-	const [nullifier3PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier1"),
-			Buffer.from(proof.inputNullifiers[0]),
-		],
-		PROGRAM_ID,
-	);
-
-	return { nullifier0PDA, nullifier1PDA, nullifier2PDA, nullifier3PDA };
 }
 
 async function preflightNullifierPDAs(
@@ -240,7 +204,7 @@ export async function deposit(
 	connection: Connection,
 	relayerUrl: string, // Relayer URL to use
 	setStatus?: StatusCallback,
-	hasher?: any,
+	hasher?: LightWasm,
 	signTransaction?: (
 		tx: VersionedTransaction,
 	) => Promise<VersionedTransaction>,
@@ -295,7 +259,7 @@ export async function deposit(
 		}
 
 		// Initialize the light protocol hasher
-		let lightWasm = hasher;
+		const lightWasm = requireHasher(hasher);
 		// Initialize the encryption service
 		const encryptionService = new EncryptionService();
 
@@ -363,7 +327,7 @@ export async function deposit(
 				connection,
 				relayerUrl,
 				setStatus,
-				hasher,
+				lightWasm,
 			);
 
 			// Filter out zero-amount UTXOs (dummy UTXOs that can't be spent)
@@ -733,7 +697,7 @@ export async function deposit(
 			nullifier1PDA,
 			nullifier2PDA,
 			nullifier3PDA,
-		} = findNullifierPDAs(proofToSubmit);
+		} = deriveNullifierPdas(proofToSubmit);
 		await preflightNullifierPDAs(
 			connection,
 			nullifier0PDA,
@@ -900,20 +864,14 @@ export async function deposit(
 		// Properly confirm the transaction
 		setStatus?.(`(waiting for transaction confirmation...)`);
 
-		try {
-			// Wait for transaction confirmation
-			const latestBlockhash =
-				await connection.getLatestBlockhash();
-			const confirmationResult =
-				await connection.confirmTransaction(
-					{
-						signature: txid,
-						blockhash: latestBlockhash.blockhash,
-						lastValidBlockHeight:
-							latestBlockhash.lastValidBlockHeight,
-					},
-					"confirmed",
-				);
+			try {
+				// Wait for transaction finalization.
+				// Use signature-based confirmation to avoid blockhash strategy mismatches.
+				const confirmationResult =
+					await connection.confirmTransaction(
+						txid,
+						"finalized",
+					);
 
 			if (confirmationResult.value.err) {
 				const err = confirmationResult.value.err;
@@ -922,10 +880,15 @@ export async function deposit(
 
 				if (typeof err === 'object' && err !== null) {
 					// Try to extract InstructionError details
-					if ('InstructionError' in err) {
-						const [idx, instructionErr] = (err as any).InstructionError;
-						errorDetails = `InstructionError at index ${idx}: ${JSON.stringify(instructionErr, null, 2)}`;
-					} else {
+						if ('InstructionError' in err) {
+							const {
+								InstructionError,
+							} = err as {
+								InstructionError: [number, unknown];
+							};
+							const [idx, instructionErr] = InstructionError;
+							errorDetails = `InstructionError at index ${idx}: ${JSON.stringify(instructionErr, null, 2)}`;
+						} else {
 						// For other error types, try to get all properties
 						try {
 							errorDetails = JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
@@ -1013,7 +976,7 @@ export async function deposit(
 			// Even if we can't verify the tree state, the transaction was sent successfully
 			return { success: true, signature: txid };
 		}
-	} catch (err: any) {
+		} catch (err: unknown) {
 		// Unlock UTXOs if we locked any (cleanup on error)
 		if (lockedCommitments.length > 0) {
 			const { getUtxoLockService } = await import(
@@ -1181,59 +1144,16 @@ async function relayDepositTorelayer(
 	relayerUrl: string,
 ): Promise<string> {
 	try {
-		const params = {
-			signedTransaction,
-		};
-
-		const response = await fetchWithRetry(
-			`${relayerUrl}/deposit`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(params),
-			},
-			3,
-		);
-
-		if (!response.ok) {
-			let errorMsg: string;
-			try {
-				const errorData = (await response.json()) as {
-					error?: any;
-				};
-				if (typeof errorData.error === 'string') {
-					errorMsg = errorData.error;
-				} else if (errorData.error) {
-					errorMsg = JSON.stringify(errorData.error, (_key, value) => {
-						if (value instanceof Error) {
-							return {
-								name: value.name,
-								message: value.message,
-								stack: value.stack
-							};
-						}
-						return value;
-					}, 2);
-				} else {
-					errorMsg = JSON.stringify(errorData, null, 2);
-				}
-			} catch {
-				errorMsg = await response.text();
-			}
-			throw new NetworkError(
-				ErrorCodes.RELAYER_ERROR,
-				`Deposit relay failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayerUrl}/deposit`, statusCode: response.status }
-			);
-		}
-
-		const result = (await response.json()) as {
+		const result = await postRelayerJson<{
 			signature?: string;
 			success: boolean;
 			error?: string;
-		};
+		}>(
+			relayerUrl,
+			"/deposit",
+			{ signedTransaction },
+			"Deposit relay failed",
+		);
 
 		if (!result.success || !result.signature) {
 			throw new NetworkError(

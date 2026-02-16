@@ -21,7 +21,9 @@
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "src/utils/atoms.ts"
-  ]
+    "dist"
+  ],
+  "ts-node": {
+    "files": true
+  }
 }

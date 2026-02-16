@@ -144,6 +144,8 @@ export interface ApiUtxo {
 export interface ApiUtxoResponse {
   count: number;
   encrypted_outputs: string[];
+  total?: number;
+  hasMore?: boolean;
 }
 
 /**

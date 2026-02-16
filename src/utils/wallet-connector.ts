@@ -71,9 +71,9 @@ export interface WalletConnectorOptions {
  * // Use with Cloak SDK
  * const sdk = new CloakSDK({
  *   connection,
- *   signer,
  *   relayerUrl: 'https://...',
  * });
+ * sdk.setSigner(signer);
  * ```
  */
 export class WalletConnector {
@@ -321,7 +321,8 @@ export class WalletConnector {
  *
  *   const handleDeposit = async () => {
  *     const signer = createSignerFromAdapter(wallet);
- *     const sdk = new CloakSDK({ connection, signer, relayerUrl });
+ *     const sdk = new CloakSDK({ connection, relayerUrl });
+ *     sdk.setSigner(signer);
  *     await sdk.initialize();
  *     await sdk.depositSol({ amount: 0.1 });
  *   };
@@ -329,7 +330,13 @@ export class WalletConnector {
  * ```
  */
 export function createSignerFromAdapter(
-  adapter: SignableWalletAdapter | { publicKey: PublicKey | null; signTransaction: any; signAllTransactions?: any; signMessage?: any; connected?: boolean }
+  adapter: SignableWalletAdapter | {
+    publicKey: PublicKey | null;
+    signTransaction?: <T extends Transaction | VersionedTransaction>(transaction: T) => Promise<T>;
+    signAllTransactions?: <T extends Transaction | VersionedTransaction>(transactions: T[]) => Promise<T[]>;
+    signMessage?: (message: Uint8Array) => Promise<Uint8Array>;
+    connected?: boolean;
+  }
 ): TransactionSigner {
   const publicKey = adapter.publicKey;
 
@@ -357,15 +364,15 @@ export function createSignerFromAdapter(
 
   const signer: TransactionSigner = {
     publicKey,
-    signTransaction: adapter.signTransaction.bind(adapter),
+    signTransaction: (tx) => adapter.signTransaction!(tx),
   };
 
   if (typeof adapter.signAllTransactions === 'function') {
-    signer.signAllTransactions = adapter.signAllTransactions.bind(adapter);
+    signer.signAllTransactions = (txs) => adapter.signAllTransactions!(txs);
   }
 
   if (typeof adapter.signMessage === 'function') {
-    signer.signMessage = adapter.signMessage.bind(adapter);
+    signer.signMessage = (message) => adapter.signMessage!(message);
   }
 
   return signer;
@@ -375,19 +382,22 @@ export function createSignerFromAdapter(
  * Check if a wallet adapter supports all required signing methods
  */
 export function isSignableAdapter(adapter: WalletAdapter): adapter is SignableWalletAdapter {
-  return typeof (adapter as any).signTransaction === 'function';
+  const candidate = adapter as { signTransaction?: unknown };
+  return typeof candidate.signTransaction === 'function';
 }
 
 /**
  * Check if a wallet adapter supports batch signing
  */
 export function supportsBatchSigning(adapter: WalletAdapter | SignableWalletAdapter): boolean {
-  return typeof (adapter as any).signAllTransactions === 'function';
+  const candidate = adapter as { signAllTransactions?: unknown };
+  return typeof candidate.signAllTransactions === 'function';
 }
 
 /**
  * Check if a wallet adapter supports message signing
  */
 export function supportsMessageSigning(adapter: WalletAdapter | SignableWalletAdapter): boolean {
-  return typeof (adapter as any).signMessage === 'function';
+  const candidate = adapter as { signMessage?: unknown };
+  return typeof candidate.signMessage === 'function';
 }

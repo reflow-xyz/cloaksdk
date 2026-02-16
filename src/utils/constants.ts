@@ -28,10 +28,13 @@ export const TRANSACT_SPL_IX_DISCRIMINATOR = Buffer.from([
 // For SDK, circuits are in the circuits/ directory relative to the package root
 // In Node.js, we need to use an absolute path or path relative to process.cwd()
 // In the browser, this should be a web path (e.g., /circuits/circuit2)
+const IS_BROWSER =
+	typeof globalThis !== "undefined" &&
+	"window" in globalThis;
+
 export const CIRCUIT_PATH =
 	process.env.CIRCUIT_PATH ||
-	(typeof globalThis !== "undefined" &&
-	typeof (globalThis as any).window !== "undefined"
+	(IS_BROWSER
 		? "/circuits/circuit2" // Browser: use web path
 		: path.join(__dirname, "../../circuits/circuit2")); // Node.js: use file path
 
@@ -39,7 +42,7 @@ export const MERKLE_TREE_DEPTH = 26;
 
 export const DEPOSIT_FEE_RATE = 0; // 0% - deposits are free
 
-export const WITHDRAW_FEE_RATE = 0.3; // 0.25%
+export const WITHDRAW_FEE_RATE = 0.3; // 0.3%
 
 // export const REFERRAL_DISCOUNT = 0.005; // 0.5% discount
 

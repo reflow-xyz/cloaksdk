@@ -10,7 +10,7 @@ import BN from "bn.js";
 import { ethers } from "ethers";
 import { randomBytes } from "crypto";
 import { Keypair } from "./keypair";
-import { log, warn, error as error } from "../utils/logger";
+import { log } from "../utils/logger";
 
 /**
  * Simplified Utxo class inspired by Tornado Cash Nova
@@ -102,7 +102,7 @@ export class Utxo {
 	 */
 	async log(): Promise<void> {
 		// Prepare the UTXO data object
-		const utxoData: any = {
+		const utxoData: Record<string, unknown> = {
 			amount: this.amount.toString(),
 			blinding: this.blinding.toString(),
 			index: this.index,
@@ -115,8 +115,9 @@ export class Utxo {
 		try {
 			utxoData.commitment = await this.getCommitment();
 			utxoData.nullifier = await this.getNullifier();
-		} catch (error: any) {
-			utxoData.error = error.message;
+		} catch (error: unknown) {
+			utxoData.error =
+				error instanceof Error ? error.message : String(error);
 		}
 
 		// Output as formatted JSON

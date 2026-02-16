@@ -26,20 +26,21 @@ import {
 } from "./constants";
 import { EncryptionService, serializeProofAndExtData } from "./encryption";
 import type { Signed } from "./getAccountSign";
-import type { StatusCallback } from "../types/internal";
-import { log, warn, error as error, serializeError } from "./logger";
+import type { LightWasm, StatusCallback } from "../types/internal";
+import { log, error as error } from "./logger";
 import { fetchWithRetry } from "./fetchWithRetry";
 import { Buffer } from "buffer";
 import { useExistingALT } from "./address_lookup_table";
 import { getExtDataHash } from "./getExtDataHash";
 import { getMyUtxos, isUtxoSpent } from "./getMyUtxos";
 import { MerkleTree } from "./merkle_tree";
+import { deriveNullifierPairPdas } from "./nullifier-pdas";
 import { parseProofToBytesArray, parseToBytesArray, prove } from "./prover";
+import { postRelayerJson } from "./relayer-client";
+import { requireHasher } from "./hasher-guard";
 import { getGlobalConfigPDA, getUserTokenAccount } from "./spl-token-utils";
 import {
 	validateSplAmount,
-	validatePublicKey,
-	validateTransactionSize,
 	parseTransactionError,
 } from "./validation";
 import { ErrorCodes, ValidationError, NetworkError, TransactionError, ConfigurationError } from '../errors';
@@ -107,48 +108,6 @@ async function fetchMerkleProof(
 	}
 }
 
-/**
- * Find nullifier PDAs for the given proof
- * nullifier2 and nullifier3 are cross-checks to prevent nullifier collision attacks
- */
-function findNullifierPDAs(proof: any) {
-	const [nullifier0PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier0"),
-			Buffer.from(proof.inputNullifiers[0]),
-		],
-		PROGRAM_ID,
-	);
-
-	const [nullifier1PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier1"),
-			Buffer.from(proof.inputNullifiers[1]),
-		],
-		PROGRAM_ID,
-	);
-
-	// Cross-check: nullifier0 seed with inputNullifiers[1]
-	const [nullifier2PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier0"),
-			Buffer.from(proof.inputNullifiers[1]),
-		],
-		PROGRAM_ID,
-	);
-
-	// Cross-check: nullifier1 seed with inputNullifiers[0]
-	const [nullifier3PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier1"),
-			Buffer.from(proof.inputNullifiers[0]),
-		],
-		PROGRAM_ID,
-	);
-
-	return { nullifier0PDA, nullifier1PDA, nullifier2PDA, nullifier3PDA };
-}
-
 // Commitment PDAs were removed in contract commit 616f4bd
 
 /**
@@ -159,55 +118,16 @@ async function relaySplDepositTorelayer(
 	relayerUrl: string,
 ): Promise<string> {
 	try {
-		const response = await fetchWithRetry(
-			`${relayerUrl}/deposit/spl`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({ signedTransaction }),
-			},
-			3,
-		);
-
-		if (!response.ok) {
-			let errorMsg: string;
-			try {
-				const errorData = (await response.json()) as {
-					error?: any;
-				};
-				if (typeof errorData.error === 'string') {
-					errorMsg = errorData.error;
-				} else if (errorData.error) {
-					errorMsg = JSON.stringify(errorData.error, (_key, value) => {
-						if (value instanceof Error) {
-							return {
-								name: value.name,
-								message: value.message,
-								stack: value.stack
-							};
-						}
-						return value;
-					}, 2);
-				} else {
-					errorMsg = JSON.stringify(errorData, null, 2);
-				}
-			} catch {
-				errorMsg = await response.text();
-			}
-			throw new NetworkError(
-				ErrorCodes.RELAYER_ERROR,
-				`SPL deposit relay failed (${response.status}): ${errorMsg}`,
-				{ endpoint: `${relayerUrl}/deposit/spl`, statusCode: response.status }
-			);
-		}
-
-		const result = (await response.json()) as {
+		const result = await postRelayerJson<{
 			signature?: string;
 			success: boolean;
 			error?: string;
-		};
+		}>(
+			relayerUrl,
+			"/deposit/spl",
+			{ signedTransaction },
+			"SPL deposit relay failed",
+		);
 
 		if (!result.success || !result.signature) {
 			throw new NetworkError(
@@ -245,7 +165,7 @@ export async function depositSpl(
 	connection: Connection,
 	relayerUrl: string, // Relayer URL to use
 	setStatus?: StatusCallback,
-	hasher?: any,
+	hasher?: LightWasm,
 	signTransaction?: (
 		tx: VersionedTransaction,
 	) => Promise<VersionedTransaction>,
@@ -255,6 +175,7 @@ export async function depositSpl(
 	utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>,
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
+	forceFreshDeposit: boolean = true, // Default to fresh-input mode
 ): Promise<{ success: boolean; signature?: string }> {
 	if (retryCount > 0) {
 		log(`Retry attempt ${retryCount}/${maxRetries}`);
@@ -269,9 +190,6 @@ export async function depositSpl(
 		);
 	}
 
-	// Track locked commitments for cleanup
-	let lockedCommitments: string[] = [];
-
 	// Validate amount
 	validateSplAmount(amount);
 
@@ -284,13 +202,15 @@ export async function depositSpl(
 
 			// Use BLAKE2b-128 for compact mint ID (~39 digits instead of ~76)
 			mintAddressNumeric = getSplMintId(mintAddress);
-		} catch (err: any) {
+		} catch (err: unknown) {
 			error("Failed to convert mint address:", err);
 			throw new ValidationError(
 				ErrorCodes.INVALID_MINT_ADDRESS,
-				`Failed to convert mint address: ${err.message}`,
+				`Failed to convert mint address: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
 				undefined,
-				err instanceof Error ? err : undefined
+				err instanceof Error ? err : undefined,
 			);
 		}
 
@@ -300,7 +220,7 @@ export async function depositSpl(
 		);
 
 		// Initialize hasher and encryption service
-		let lightWasm = hasher;
+		const lightWasm = requireHasher(hasher);
 
 		// Determine which wallet signature to use for UTXO derivation
 		const utxoSignature = utxoWalletSigned ? utxoWalletSigned.signature : signed.signature;
@@ -332,13 +252,15 @@ export async function depositSpl(
 					`Insufficient token balance: ${balance}. Need at least ${amount + fee_amount}.`
 				);
 			}
-		} catch (err: any) {
-			if (err.message.includes("could not find account")) {
+		} catch (err: unknown) {
+			const errMessage =
+				err instanceof Error ? err.message : String(err);
+			if (errMessage.includes("could not find account")) {
 				throw new ValidationError(
 					ErrorCodes.INVALID_TOKEN_ACCOUNT,
 					`Token account not found. You may not have any tokens of this type.`,
 					undefined,
-					err instanceof Error ? err : undefined
+					err instanceof Error ? err : undefined,
 				);
 			}
 			throw err;
@@ -398,31 +320,34 @@ export async function depositSpl(
 		const utxoPrivateKey = utxoEncryptionService.deriveUtxoPrivateKey();
 		const utxoKeypair = new UtxoKeypair(utxoPrivateKey, lightWasm);
 
-		// Fetch existing UTXOs for this mint (using UTXO wallet if provided)
-		const allUtxos = await getMyUtxos(
-			utxoWalletSigned || signed,
-			connection,
-			relayerUrl,
-			setStatus,
-			hasher,
-		);
+			let existingUnspentUtxos: Utxo[] = [];
+			if (!forceFreshDeposit) {
+				// Fetch existing UTXOs for this mint (using UTXO wallet if provided)
+				const allUtxos = await getMyUtxos(
+					utxoWalletSigned || signed,
+					connection,
+					relayerUrl,
+					setStatus,
+					lightWasm,
+				);
 
-		// Filter for this specific mint and non-zero amounts
-		// Use backwards-compatible matching to support both old and new mint ID formats
-		const mintUtxos = allUtxos.filter(
-			(utxo) =>
-				mintIdMatches(utxo.mintAddress, mintAddress) &&
-				utxo.amount.gt(new BN(0)),
-		);
+				// Filter for this specific mint and non-zero amounts
+				// Use backwards-compatible matching to support both old and new mint ID formats
+				const mintUtxos = allUtxos.filter(
+					(utxo) =>
+						mintIdMatches(utxo.mintAddress, mintAddress) &&
+						utxo.amount.gt(new BN(0)),
+				);
 
-		// Check which UTXOs are unspent
-		const utxoSpentStatuses = await Promise.all(
-			mintUtxos.map((utxo) => isUtxoSpent(connection, utxo)),
-		);
+				// Preserve old behavior: confirm spent-status directly.
+				const utxoSpentStatuses = await Promise.all(
+					mintUtxos.map((utxo) => isUtxoSpent(connection, utxo, relayerUrl)),
+				);
 
-		const existingUnspentUtxos = mintUtxos.filter(
-			(utxo, index) => !utxoSpentStatuses[index],
-		);
+				existingUnspentUtxos = mintUtxos.filter(
+					(_utxo, index) => !utxoSpentStatuses[index],
+				);
+			}
 
 		// Calculate output amounts
 		let extAmount: number;
@@ -561,13 +486,17 @@ export async function depositSpl(
 			var outputCommitments = await Promise.all(
 				outputs.map((x) => x.getCommitment()),
 			);
-		} catch (commitmentErr: any) {
-			throw new ValidationError(
-				ErrorCodes.COMMITMENT_GENERATION_FAILED,
-				`Failed to generate UTXO commitments: ${commitmentErr.message}`,
-				undefined,
-				commitmentErr instanceof Error ? commitmentErr : undefined
-			);
+			} catch (commitmentErr: unknown) {
+				throw new ValidationError(
+					ErrorCodes.COMMITMENT_GENERATION_FAILED,
+					`Failed to generate UTXO commitments: ${
+						commitmentErr instanceof Error
+							? commitmentErr.message
+							: String(commitmentErr)
+					}`,
+					undefined,
+					commitmentErr instanceof Error ? commitmentErr : undefined
+				);
 		}
 
 		// Encrypt UTXOs with UTXO wallet's encryption service
@@ -635,22 +564,8 @@ export async function depositSpl(
 			outputCommitments: [inputsInBytes[5], inputsInBytes[6]],
 		};
 
-		// Find nullifier PDAs (nullifier2/nullifier3 removed in latest contract)
-		const [nullifier0PDA] = PublicKey.findProgramAddressSync(
-			[
-				Buffer.from("nullifier0"),
-				Buffer.from(proofToSubmit.inputNullifiers[0]),
-			],
-			PROGRAM_ID,
-		);
-
-		const [nullifier1PDA] = PublicKey.findProgramAddressSync(
-			[
-				Buffer.from("nullifier1"),
-				Buffer.from(proofToSubmit.inputNullifiers[1]),
-			],
-			PROGRAM_ID,
-		);
+		const { nullifier0PDA, nullifier1PDA } =
+			deriveNullifierPairPdas(proofToSubmit);
 
 		// Validate ALT address is provided
 		if (!altAddress) {
@@ -862,17 +777,12 @@ export async function depositSpl(
 		setStatus?.(`(waiting for transaction confirmation...)`);
 
 		try {
-			const latestBlockhash =
-				await connection.getLatestBlockhash();
+			// Wait for transaction finalization.
+			// Use signature-based confirmation to avoid blockhash strategy mismatches.
 			const confirmationResult =
 				await connection.confirmTransaction(
-					{
-						signature: txid,
-						blockhash: latestBlockhash.blockhash,
-						lastValidBlockHeight:
-							latestBlockhash.lastValidBlockHeight,
-					},
-					"confirmed",
+					txid,
+					"finalized",
 				);
 
 			if (confirmationResult.value.err) {
@@ -882,10 +792,15 @@ export async function depositSpl(
 
 				if (typeof err === 'object' && err !== null) {
 					// Try to extract InstructionError details
-					if ('InstructionError' in err) {
-						const [idx, instructionErr] = (err as any).InstructionError;
-						errorDetails = `InstructionError at index ${idx}: ${JSON.stringify(instructionErr, null, 2)}`;
-					} else {
+						if ('InstructionError' in err) {
+							const {
+								InstructionError,
+							} = err as {
+								InstructionError: [number, unknown];
+							};
+							const [idx, instructionErr] = InstructionError;
+							errorDetails = `InstructionError at index ${idx}: ${JSON.stringify(instructionErr, null, 2)}`;
+						} else {
 						// For other error types, try to get all properties
 						try {
 							errorDetails = JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
@@ -909,7 +824,7 @@ export async function depositSpl(
 		}
 
 		return { success: true, signature: txid };
-	} catch (err: any) {
+		} catch (err: unknown) {
 		// Parse error to detect specific failure reasons
 		const errorInfo = parseTransactionError(err);
 

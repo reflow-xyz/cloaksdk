@@ -6,7 +6,6 @@
  * (100, 10, 1, 0.1, 0.01, 0.001 SOL) with only one wallet signature prompt.
  */
 
-import type { VersionedTransaction } from "@solana/web3.js";
 import { log, warn } from "./logger";
 
 export interface BatchDepositPlan {

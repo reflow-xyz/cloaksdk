@@ -1,10 +1,15 @@
-import { Connection, PublicKey } from "@solana/web3.js";
-import { log, warn, error as error } from "./logger";
+import {
+	AddressLookupTableAccount,
+	Connection,
+	PublicKey,
+	RpcResponseAndContext,
+} from "@solana/web3.js";
+import { log, error as error } from "./logger";
 
 export async function useExistingALT(
 	connection: Connection,
 	altAddress: PublicKey,
-): Promise<{ value: any } | null> {
+): Promise<RpcResponseAndContext<AddressLookupTableAccount | null> | null> {
 	try {
 		log(`Using existing ALT: ${altAddress.toString()}`);
 		const altAccount = await connection.getAddressLookupTable(

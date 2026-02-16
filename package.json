@@ -1,6 +1,6 @@
 {
   "name": "@cloak-dev/sdk",
-  "version": "1.2.0",
+  "version": "1.2.7",
   "description": "Cloak Privacy Protocol SDK for Solana - Deposit and withdraw SOL/SPL tokens with zero-knowledge proofs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,8 +20,11 @@
   ],
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "dev": "tsc --watch",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest --passWithNoTests",
+    "check": "npm run typecheck && npm run test",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -60,7 +63,8 @@
     "@types/react": "^19.2.7",
     "dotenv": "^17.2.3",
     "react": "^19.2.3",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.0.18"
   },
   "packageManager": "pnpm@10.15.0",
   "peerDependencies": {

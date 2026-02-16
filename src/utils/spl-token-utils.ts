@@ -1,4 +1,4 @@
-import { log, warn, error as error } from "./logger";
+import { error as error } from "./logger";
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
 	getAssociatedTokenAddress,
@@ -169,12 +169,14 @@ export async function getTokenBalance(
 		}
 
 		return baseBalance;
-	} catch (error: any) {
+	} catch (err: unknown) {
 		// Account not found is expected when user hasn't received this token yet
-		if (error?.message?.includes("could not find account")) {
+		const errMessage =
+			err instanceof Error ? err.message : String(err);
+		if (errMessage.includes("could not find account")) {
 			return 0;
 		}
-		error("Error fetching token balance:", error);
+		error("Error fetching token balance:", err);
 		return 0;
 	}
 }

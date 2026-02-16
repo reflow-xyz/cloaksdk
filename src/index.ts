@@ -16,8 +16,8 @@
  *
  * const sdk = new CloakSDK({
  *   connection,
- *   signer: keypair,
  * });
+ * sdk.setSigner(keypair);
  *
  * await sdk.initialize();
  *
@@ -53,6 +53,10 @@ export type {
   WithdrawResult,
   Signed,
   UtxoBalance,
+  TransferOptions,
+  TransferResult,
+  TransferBackResult,
+  BatchBalanceEntry,
 } from './types';
 
 // Export utility functions for advanced usage

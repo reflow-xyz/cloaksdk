@@ -1,5 +1,6 @@
 import { Keypair as UtxoKeypair } from "../models/keypair";
 import { Utxo } from "../models/utxo";
+import type { LightWasm } from "../types/internal";
 
 // Import noble hashes for key derivation (still needed for deriveUtxoPrivateKey)
 import { sha256 } from "@noble/hashes/sha256";
@@ -38,7 +39,7 @@ export interface UtxoData {
 	blinding: string;
 	index: number | string;
 	// Optional additional fields
-	[key: string]: any;
+	[key: string]: unknown;
 }
 
 
@@ -264,7 +265,7 @@ export class EncryptionService {
 	public decryptUtxo(
 		encryptedData: Uint8Array | string,
 		keypair: UtxoKeypair,
-		lightWasm?: any,
+		lightWasm?: LightWasm,
 	): Utxo {
 		if (!this.encryptionKey) {
 			throw new Error(
@@ -343,8 +344,22 @@ export class EncryptionService {
 
 // Function to serialize proof and extData (same as original withdraw script)
 export function serializeProofAndExtData(
-	proof: any,
-	extData: any,
+	proof: {
+		proofA: Uint8Array | number[];
+		proofB: Uint8Array | number[];
+		proofC: Uint8Array | number[];
+		root: Uint8Array | number[];
+		publicAmount: Uint8Array | number[];
+		extDataHash: Uint8Array | number[];
+		inputNullifiers: Array<Uint8Array | number[]>;
+		outputCommitments: Array<Uint8Array | number[]>;
+	},
+	extData: {
+		extAmount: BN;
+		fee: BN;
+		encryptedOutput1: Uint8Array;
+		encryptedOutput2: Uint8Array;
+	},
 	discriminator: Buffer = TRANSACT_IX_DISCRIMINATOR,
 ) {
 	// Serialize the instruction data to match what the contract expects

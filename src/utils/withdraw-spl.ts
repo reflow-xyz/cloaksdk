@@ -23,7 +23,7 @@ import {
 	uint8ArrayToBase64,
 } from "./encryption";
 import type { Signed } from "./getAccountSign";
-import type { StatusCallback } from "../types/internal";
+import type { LightWasm, StatusCallback } from "../types/internal";
 import { getExtDataHash } from "./getExtDataHash";
 import { getMyUtxos, isUtxoSpent } from "./getMyUtxos";
 import { WITHDRAW_FEE_RATE } from "./constants";
@@ -41,6 +41,9 @@ import {
 } from "../errors";
 import { fetchWithRetry } from "./fetchWithRetry";
 import { getSplMintId, mintIdMatches } from "./spl-mint-id";
+import { requireHasher } from "./hasher-guard";
+import { deriveNullifierPairPdas } from "./nullifier-pdas";
+import { postRelayerJson } from "./relayer-client";
 
 /**
  * Query remote tree state from relayer API
@@ -218,33 +221,10 @@ async function fetchMerkleProofs(
 }
 
 /**
- * Find nullifier PDAs for the given proof
- */
-function findNullifierPDAs(proof: any) {
-	const [nullifier0PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier0"),
-			Buffer.from(proof.inputNullifiers[0]),
-		],
-		PROGRAM_ID,
-	);
-
-	const [nullifier1PDA] = PublicKey.findProgramAddressSync(
-		[
-			Buffer.from("nullifier1"),
-			Buffer.from(proof.inputNullifiers[1]),
-		],
-		PROGRAM_ID,
-	);
-
-	return { nullifier0PDA, nullifier1PDA };
-}
-
-/**
  * Submit SPL withdraw request to relayer backend
  */
 async function submitSplWithdrawTorelayer(
-	params: any,
+	params: unknown,
 	relayerUrl: string,
 ): Promise<string> {
 	try {
@@ -253,72 +233,15 @@ async function submitSplWithdrawTorelayer(
 			params,
 		);
 
-		const response = await fetchWithRetry(
-			`${relayerUrl}/withdraw/spl`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(params),
-			},
-			3,
-		);
-
-		if (!response.ok) {
-			let errorMsg: string;
-			try {
-				const errorData = (await response.json()) as {
-					error?: any;
-				};
-				// Handle various error formats
-				if (typeof errorData.error === "string") {
-					errorMsg = errorData.error;
-				} else if (errorData.error) {
-					// Extract nested error details if possible
-					errorMsg = JSON.stringify(
-						errorData.error,
-						(_key, value) => {
-							// Handle circular references and special types
-							if (
-								value instanceof
-								Error
-							) {
-								return {
-									name: value.name,
-									message: value.message,
-									stack: value.stack,
-								};
-							}
-							return value;
-						},
-						2,
-					);
-				} else {
-					errorMsg = JSON.stringify(
-						errorData,
-						null,
-						2,
-					);
-				}
-			} catch {
-				// If JSON parsing fails, use response text
-				errorMsg = await response.text();
-			}
-			throw new NetworkError(
-				ErrorCodes.RELAYER_ERROR,
-				`SPL withdraw request failed (${response.status}): ${errorMsg}`,
-				{
-					endpoint: `${relayerUrl}/withdraw/spl`,
-					statusCode: response.status,
-				},
-			);
-		}
-
-		const result = (await response.json()) as {
+		const result = await postRelayerJson<{
 			signature: string;
 			success: boolean;
-		};
+		}>(
+			relayerUrl,
+			"/withdraw/spl",
+			params,
+			"SPL withdraw request failed",
+		);
 		log("Response:", result);
 
 		return result.signature;
@@ -336,7 +259,7 @@ async function submitSplWithdrawTorelayer(
  * Submit delayed SPL withdraw request to relayer backend
  */
 async function submitDelayedSplWithdrawTorelayer(
-	params: any,
+	params: unknown,
 	relayerUrl: string,
 ): Promise<{ delayedWithdrawalId: string; executeAt: string }> {
 	try {
@@ -345,71 +268,18 @@ async function submitDelayedSplWithdrawTorelayer(
 			params,
 		);
 
-		const response = await fetchWithRetry(
-			`${relayerUrl}/withdraw/spl/delayed`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(params),
-			},
-			3,
-		);
-
-		if (!response.ok) {
-			let errorMsg: string;
-			try {
-				const errorData = (await response.json()) as {
-					error?: any;
-				};
-				if (typeof errorData.error === "string") {
-					errorMsg = errorData.error;
-				} else if (errorData.error) {
-					errorMsg = JSON.stringify(
-						errorData.error,
-						(_key, value) => {
-							if (
-								value instanceof
-								Error
-							) {
-								return {
-									name: value.name,
-									message: value.message,
-									stack: value.stack,
-								};
-							}
-							return value;
-						},
-						2,
-					);
-				} else {
-					errorMsg = JSON.stringify(
-						errorData,
-						null,
-						2,
-					);
-				}
-			} catch {
-				errorMsg = await response.text();
-			}
-			throw new NetworkError(
-				ErrorCodes.RELAYER_ERROR,
-				`Delayed SPL withdraw request failed (${response.status}): ${errorMsg}`,
-				{
-					endpoint: `${relayerUrl}/withdraw/spl/delayed`,
-					statusCode: response.status,
-				},
-			);
-		}
-
-		const result = (await response.json()) as {
+		const result = await postRelayerJson<{
 			success: boolean;
 			delayedWithdrawalId: string;
 			executeAt: string;
 			delayMinutes: number;
 			message: string;
-		};
+		}>(
+			relayerUrl,
+			"/withdraw/spl/delayed",
+			params,
+			"Delayed SPL withdraw request failed",
+		);
 		log("Response:", result);
 
 		return {
@@ -447,7 +317,7 @@ export async function withdrawSpl(
 	connection: Connection,
 	relayerUrl: string, // Relayer URL to use
 	setStatus?: StatusCallback,
-	hasher?: any,
+	hasher?: LightWasm,
 	delayMinutes?: number,
 	maxRetries: number = 3,
 	retryCount: number = 0,
@@ -494,7 +364,7 @@ export async function withdrawSpl(
 
 	try {
 		// Initialize hasher and encryption service
-		const lightWasm = hasher;
+		const lightWasm = requireHasher(hasher);
 
 		// Determine which wallet signature to use for UTXO derivation
 		const utxoSignature = utxoWalletSigned
@@ -544,7 +414,7 @@ export async function withdrawSpl(
 		// Fetch or use provided UTXOs
 		let unspentUtxos: Utxo[];
 
-		if (providedUtxos) {
+		if (providedUtxos && providedUtxos.length > 0) {
 			// Use the provided UTXOs (for batch withdrawals)
 			log(
 				`[SDK] Using ${providedUtxos.length} provided UTXOs`,
@@ -552,12 +422,15 @@ export async function withdrawSpl(
 			unspentUtxos = providedUtxos;
 		} else {
 			// Fetch existing UTXOs (using UTXO wallet if provided)
+			// Force refresh on retries to avoid stale cache while relayer indexing catches up.
+			const forceRefreshUtxos = retryCount > 0;
 			const allUtxos = await getMyUtxos(
 				utxoWalletSigned || signed,
 				connection,
 				relayerUrl,
 				setStatus,
-				hasher,
+				lightWasm,
+				forceRefreshUtxos,
 			);
 
 			// Filter for this specific mint and non-zero amounts
@@ -597,99 +470,6 @@ export async function withdrawSpl(
 
 		// Sort UTXOs by amount in descending order
 		unspentUtxos.sort((a, b) => b.amount.cmp(a.amount));
-
-		// Check if we need more than 2 UTXOs for this withdrawal
-		const feeAmount = Math.floor(
-			amount * (WITHDRAW_FEE_RATE / 100),
-		);
-		const totalNeeded = new BN(amount).add(new BN(feeAmount));
-		const firstTwoTotal =
-			unspentUtxos.length >= 2
-				? unspentUtxos[0].amount.add(
-						unspentUtxos[1].amount,
-					)
-				: unspentUtxos[0].amount;
-
-		// If we need >2 UTXOs, use batch withdrawal logic
-		// if (firstTwoTotal.lt(totalNeeded) && unspentUtxos.length > 2) {
-		// 	log(`[SDK] Need more than 2 UTXOs for SPL withdrawal (have ${unspentUtxos.length} UTXOs), using batch withdrawal...`);
-
-		// 	// Import batch withdrawal utilities
-		// 	const { planBatchWithdrawals } = await import("./batch-withdraw.js");
-
-		// 	// Plan the batch withdrawals
-		// 	const plan = planBatchWithdrawals(
-		// 		amount,
-		// 		WITHDRAW_FEE_RATE,
-		// 		unspentUtxos,
-		// 	);
-
-		// 	if (!plan || plan.withdrawals.length === 0) {
-		// 		throw new ValidationError(
-		// 			ErrorCodes.INVALID_STATE,
-		// 			"Unable to plan batch withdrawals with available UTXOs"
-		// 		);
-		// 	}
-
-		// 	log(`[SDK] Executing ${plan.withdrawals.length} batch SPL withdrawals...`);
-		// 	const signatures: string[] = [];
-		// 	let totalWithdrawn = 0;
-
-		// 	// Execute each withdrawal sequentially to avoid conflicts
-		// 	for (let i = 0; i < plan.withdrawals.length; i++) {
-		// 		const withdrawal = plan.withdrawals[i];
-
-		// 		setStatus?.(`Processing withdrawal ${i + 1}/${plan.withdrawals.length}...`);
-
-		// 		// Recursively call withdrawSpl with the specific UTXOs
-		// 		const result = await withdrawSpl(
-		// 			recipient_address,
-		// 			withdrawal.amount,
-		// 			mintAddress,
-		// 			signed,
-		// 			connection,
-		// 			relayerUrl,
-		// 			setStatus,
-		// 			hasher,
-		// 			delayMinutes,
-		// 			maxRetries,
-		// 			retryCount,
-		// 			utxoWalletSigned,
-		// 			utxoWalletSignTransaction,
-		// 			withdrawal.utxos, // Provide specific UTXOs for this withdrawal
-		// 			circuitPath,
-		// 			altAddress,
-		// 		);
-
-		// 		if (result.success && result.signature) {
-		// 			signatures.push(result.signature);
-		// 			totalWithdrawn += withdrawal.amount;
-		// 		} else {
-		// 			warn(`[SDK WARNING] Batch SPL withdrawal ${i + 1} failed: ${result.error}`);
-		// 		}
-
-		// 		// Small delay between withdrawals
-		// 		if (i < plan.withdrawals.length - 1) {
-		// 			await new Promise(resolve => setTimeout(resolve, 500));
-		// 		}
-		// 	}
-
-		// 	if (signatures.length === 0) {
-		// 		throw new NetworkError(
-		// 			ErrorCodes.TRANSACTION_FAILED,
-		// 			"All batch withdrawals failed"
-		// 		);
-		// 	}
-
-		// 	log(`[SDK] Batch SPL withdrawal complete: ${signatures.length}/${plan.withdrawals.length} successful`);
-
-		// 	return {
-		// 		isPartial: totalWithdrawn < amount,
-		// 		success: true,
-		// 		signature: signatures[0], // First signature for backward compatibility
-		// 		signatures: signatures, // All signatures
-		// 	};
-		// }
 
 		// Normal withdrawal with up to 2 UTXOs
 		// Select inputs
@@ -917,7 +697,7 @@ export async function withdrawSpl(
 
 		// Find PDAs
 		const { nullifier0PDA, nullifier1PDA } =
-			findNullifierPDAs(proofToSubmit);
+			deriveNullifierPairPdas(proofToSubmit);
 
 		// Serialize proof and extData with SPL discriminator
 		const serializedProof = serializeProofAndExtData(
@@ -1108,7 +888,7 @@ export async function withdrawSpl(
 
 			return { isPartial, success: true, signature };
 		}
-	} catch (err: any) {
+		} catch (err: unknown) {
 		// Parse error to detect specific failure reasons
 		const errorInfo = parseTransactionError(err);
 
@@ -1169,15 +949,25 @@ export async function withdrawSpl(
 			error(` SPL withdrawal failed:`, err);
 			error(`Full error details: ${serializeError(err)}`);
 
-			if (isNoUtxosError) {
-				error(
-					` No UTXOs available, retrying (attempt ${
-						retryCount + 1
-					}/${maxRetries})...`,
-				);
-			} else {
-				error(
-					` Retrying SPL withdrawal (attempt ${
+				if (isNoUtxosError) {
+					error(
+						` No UTXOs available, retrying (attempt ${
+							retryCount + 1
+						}/${maxRetries})...`,
+					);
+					const delayMs = Math.min(
+						2000 * (retryCount + 1),
+						10000,
+					);
+					error(
+						` Waiting ${delayMs}ms for relayer indexing before retry...`,
+					);
+					await new Promise((resolve) =>
+						setTimeout(resolve, delayMs),
+					);
+				} else {
+					error(
+						` Retrying SPL withdrawal (attempt ${
 						retryCount + 1
 					}/${maxRetries})...`,
 				);

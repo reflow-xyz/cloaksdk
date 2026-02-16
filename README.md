@@ -36,12 +36,14 @@ const keypair = Keypair.fromSecretKey(secretKeyBytes);
 // Create SDK instance
 const sdk = new CloakSDK({
   connection,
-  signer: keypair,
   verbose: true // Optional: enable logging
 });
 
 // Initialize SDK (required before use)
 await sdk.initialize();
+
+// Provide signer only when you need signing operations
+sdk.setSigner(keypair);
 
 // Now you can use all SDK functions
 ```
@@ -56,8 +58,7 @@ Creates a new SDK instance.
 
 **Parameters:**
 - `config.connection` (Connection): Solana connection instance
-- `config.signer` (TransactionSigner | Keypair): User's Solana keypair or wallet adapter for signing transactions
-- `config.relayerUrl` (string, optional): Custom relayer URL. Defaults to production relayer
+- `config.relayerUrl` (string): Cloak relayer base URL (must serve `/tx/prepare` or `/merkle/root`, plus `/utxos/range`)
 - `config.programId` (string, optional): Custom program ID. Defaults to mainnet program
 - `config.verbose` (boolean, optional): Enable verbose logging. Default: false
 
@@ -65,7 +66,7 @@ Creates a new SDK instance.
 
 #### `await sdk.initialize()`
 
-Initializes the SDK by loading the Poseidon hasher and generating account signatures.
+Initializes the SDK by loading the Poseidon hasher.
 **Must be called before any other operations.**
 
 ```typescript

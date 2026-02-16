@@ -1,6 +1,7 @@
 import {
 	Connection,
 	Keypair,
+	LAMPORTS_PER_SOL,
 	PublicKey,
 	VersionedTransaction,
 } from "@solana/web3.js";
@@ -13,6 +14,7 @@ import { getAccountSign } from "../utils/getAccountSign";
 import { setVerbose, log, error } from "../utils/logger";
 import { sha256 } from "@noble/hashes/sha256";
 import BN from "bn.js";
+import { Utxo } from "../models/utxo";
 import type {
 	CloakSDKConfig,
 	TransactionSigner,
@@ -27,10 +29,15 @@ import type {
 	WithdrawResult,
 	Signed,
 	UtxoBalance,
+	TransferOptions,
+	TransferResult,
+	TransferBackResult,
+	BatchBalanceEntry,
+	LightWasm,
 } from "../types";
 import { getMyUtxos, clearUtxoCache, refreshUtxos } from "../utils/getMyUtxos";
 import { planBatchDeposits, planBatchSplDeposits } from "../utils/batch-deposit";
-import { ErrorCodes, ConfigurationError } from "../errors";
+import { ErrorCodes, ConfigurationError, isCloakError } from "../errors";
 import { fetchWithRetry } from "../utils/fetchWithRetry";
 import { CIRCUIT_PATH } from "../utils/constants";
 import { mintIdMatches } from "../utils/spl-mint-id";
@@ -74,23 +81,27 @@ import { mintIdMatches } from "../utils/spl-mint-id";
 /**
  * Helper to check if signer is a Keypair
  */
-function isKeypair(signer: TransactionSigner | Keypair): signer is Keypair {
-	return "secretKey" in signer;
+function isKeypair(
+	signer: TransactionSigner | Keypair | null | undefined,
+): signer is Keypair {
+	return !!signer && "secretKey" in signer;
 }
 
 export class CloakSDK {
 	private connection: Connection;
-	private signer: TransactionSigner | Keypair;
-	private publicKey: PublicKey;
+	private signer: TransactionSigner | Keypair | null;
+	private publicKey: PublicKey | null;
 	private relayerUrl: string;
 	private programId: string;
 	private verbose: boolean;
 	private circuitPath: string;
 	private altAddress: PublicKey;
-	private hasher: any = null;
-	private signed: Signed | null = null;
+	private hasher: LightWasm | null = null;
 	private initialized: boolean = false;
 	private lastKnownTreeIndex: number = -1;
+	private lastTreeStateCheckAtMs: number = 0;
+	private readonly treeStateCheckIntervalMs: number = 2_000;
+	private readonly accountSignCache = new Map<string, Signed>();
 
 	/**
 	 * Creates a new Cloak SDK instance
@@ -99,8 +110,8 @@ export class CloakSDK {
 	 */
 	constructor(config: CloakSDKConfig) {
 		this.connection = config.connection;
-		this.signer = config.signer;
-		this.publicKey = config.signer.publicKey;
+		this.signer = null;
+		this.publicKey = null;
 		this.relayerUrl = config.relayerUrl;
 		this.programId =
 			config.programId ||
@@ -118,8 +129,8 @@ export class CloakSDK {
 	/**
 	 * Initialize the SDK
 	 *
-	 * This must be called before any other operations.
-	 * It loads the Poseidon hasher and generates the account signature.
+	 * This must be called before operations.
+	 * It loads the Poseidon hasher.
 	 *
 	 * @throws {Error} If initialization fails
 	 */
@@ -136,11 +147,6 @@ export class CloakSDK {
 			log("Loading Poseidon hasher...");
 			this.hasher = await getHasher();
 			log("Hasher loaded successfully");
-
-			// Generate account signature for encryption
-			log("Generating account signature...");
-			this.signed = await this.generateAccountSign();
-			log("Account signature generated");
 
 			this.initialized = true;
 			log("SDK initialized successfully");
@@ -181,25 +187,27 @@ export class CloakSDK {
 
 		try {
 			log(`Depositing ${options.amount} SOL...`);
+			const signer = this.resolveSigner(options.signer);
+			const signed = await this.resolveSigned(signer);
 
-			const result = await deposit(
-				options.amount,
-				this.signed!,
-				this.connection,
-				this.relayerUrl,
-				options.onStatus,
-				this.hasher,
-				this.signTransaction.bind(this),
-				options.maxRetries ?? 3,
-				0, // retryCount,
-				options.utxoWalletSigned,
-				options.utxoWalletSignTransaction,
-				this.circuitPath,
-				undefined, // transactionIndex
-				undefined, // forceFreshDeposit
-				undefined, // buildOnly
-				this.altAddress,
-			);
+				const result = await deposit(
+					options.amount,
+					signed,
+					this.connection,
+					this.relayerUrl,
+					options.onStatus,
+					this.hasher!,
+					(tx) => this.signTransaction(tx, signer),
+					options.maxRetries ?? 3,
+					0, // retryCount,
+					options.utxoWalletSigned,
+					options.utxoWalletSignTransaction,
+					this.circuitPath,
+					undefined, // transactionIndex
+					!options.consolidate, // forceFreshDeposit
+					undefined, // buildOnly
+					this.altAddress,
+				);
 
 			if (result.success) {
 				log(`Deposit successful: ${result.signature}`);
@@ -245,23 +253,26 @@ export class CloakSDK {
 			log(
 				`Depositing ${options.amount} tokens (${options.mintAddress})...`,
 			);
+			const signer = this.resolveSigner(options.signer);
+			const signed = await this.resolveSigned(signer);
 
-			const result = await depositSpl(
-				options.amount,
-				options.mintAddress,
-				this.signed!,
-				this.connection,
-				this.relayerUrl,
-				options.onStatus,
-				this.hasher,
-				this.signTransaction.bind(this),
-				options.maxRetries ?? 3,
-				0, // retryCount
-				options.utxoWalletSigned,
-				options.utxoWalletSignTransaction,
-				this.circuitPath,
-				this.altAddress,
-			);
+				const result = await depositSpl(
+					options.amount,
+					options.mintAddress,
+					signed,
+					this.connection,
+					this.relayerUrl,
+					options.onStatus,
+					this.hasher!,
+					(tx) => this.signTransaction(tx, signer),
+					options.maxRetries ?? 3,
+					0, // retryCount
+					options.utxoWalletSigned,
+					options.utxoWalletSignTransaction,
+					this.circuitPath,
+					this.altAddress,
+					!options.consolidate,
+				);
 
 			if (result.success) {
 				log(
@@ -308,6 +319,8 @@ export class CloakSDK {
 
 		try {
 			log(`Batch depositing ${options.amount} SOL with denomination breakdown...`);
+			const signer = this.resolveSigner(options.signer);
+			const signed = await this.resolveSigned(signer);
 
 			// Plan the batch deposit
 			const plan = planBatchDeposits(options.amount);
@@ -319,7 +332,7 @@ export class CloakSDK {
 			options.onStatus?.(`Planning ${plan.totalDeposits} deposits...`);
 
 			// Check if signAllTransactions is available
-			const signAllTxs = 'signAllTransactions' in this.signer ? this.signer.signAllTransactions : undefined;
+			const signAllTxs = 'signAllTransactions' in signer ? signer.signAllTransactions : undefined;
 			if (!signAllTxs) {
 				throw new Error('Batch deposits require signAllTransactions. Please update your wallet or use individual deposits.');
 			}
@@ -333,14 +346,16 @@ export class CloakSDK {
 				try {
 					log(`${progress} Building transaction for ${depositPlan.amount} SOL`);
 
-					// Use the existing deposit function but build transaction only
-					const tx = await this.buildDepositTransaction(
-						depositPlan.amount,
-						(status: string) => options.onStatus?.(`${progress} ${status}`),
-						index,
-						options.utxoWalletSigned,
-						options.utxoWalletSignTransaction
-					);
+						// Use the existing deposit function but build transaction only
+						const tx = await this.buildDepositTransaction(
+							depositPlan.amount,
+							(status: string) => options.onStatus?.(`${progress} ${status}`),
+							signer,
+							signed,
+							index,
+							options.utxoWalletSigned,
+							options.utxoWalletSignTransaction
+						);
 
 					log(`${progress} Transaction built successfully`);
 					return tx;
@@ -441,6 +456,8 @@ export class CloakSDK {
 
 		try {
 			log(`Batch depositing SPL tokens (${options.mintAddress})...`);
+			const signer = this.resolveSigner(options.signer);
+			const signed = await this.resolveSigned(signer);
 
 			// Determine decimals for the token (simplified - you may want to fetch this)
 			const decimals = 9; // Default to 9, but you should fetch actual decimals
@@ -455,7 +472,7 @@ export class CloakSDK {
 			options.onStatus?.(`Planning ${plan.totalDeposits} deposits...`);
 
 			// Check if signAllTransactions is available
-			const signAllTxs = 'signAllTransactions' in this.signer ? this.signer.signAllTransactions : undefined;
+			const signAllTxs = 'signAllTransactions' in signer ? signer.signAllTransactions : undefined;
 			if (!signAllTxs) {
 				throw new Error('Batch deposits require signAllTransactions. Please update your wallet.');
 			}
@@ -466,15 +483,17 @@ export class CloakSDK {
 			const buildPromises = plan.deposits.map(async (depositPlan, index) => {
 				const progress = `[${index + 1}/${plan.totalDeposits}]`;
 				try {
-					// Build SPL deposit transaction
-					return await this.buildSplDepositTransaction(
-						depositPlan.amount,
-						options.mintAddress,
-						(status: string) => options.onStatus?.(`${progress} ${status}`),
-						index,
-						options.utxoWalletSigned,
-						options.utxoWalletSignTransaction
-					);
+						// Build SPL deposit transaction
+						return await this.buildSplDepositTransaction(
+							depositPlan.amount,
+							options.mintAddress,
+							(status: string) => options.onStatus?.(`${progress} ${status}`),
+							signer,
+							signed,
+							index,
+							options.utxoWalletSigned,
+							options.utxoWalletSignTransaction
+						);
 				} catch (err) {
 					error(`${progress} Failed to build SPL transaction: ${err}`);
 					throw err;
@@ -534,6 +553,8 @@ export class CloakSDK {
 	private async buildDepositTransaction(
 		amount: number,
 		onStatus?: (status: string) => void,
+		signer?: TransactionSigner | Keypair,
+		signed?: Signed,
 		transactionIndex?: number,
 		utxoWalletSigned?: Signed,
 		utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>
@@ -549,19 +570,19 @@ export class CloakSDK {
 			return tx; // Return unsigned transaction
 		};
 		
-		try {
-			// Call deposit with buildOnly flag to prevent submission
-			const result = await deposit(
-				amount,
-				utxoWalletSigned || this.signed!,
-				this.connection,
-				this.relayerUrl,
-				onStatus,
-				this.hasher,
-				captureTransaction, // Intercept the transaction
-				1, // maxRetries
-				0, // retryCount
-				utxoWalletSigned,
+			try {
+				// Call deposit with buildOnly flag to prevent submission
+				const result = await deposit(
+					amount,
+					signed ?? utxoWalletSigned ?? (await this.resolveSigned(signer)),
+					this.connection,
+					this.relayerUrl,
+					onStatus,
+					this.hasher!,
+					captureTransaction, // Intercept the transaction
+					1, // maxRetries
+					0, // retryCount
+					utxoWalletSigned,
 				utxoWalletSignTransaction,
 				this.circuitPath,
 				transactionIndex, // Pass transaction index for unique dummy UTXOs in batch deposits
@@ -593,6 +614,8 @@ export class CloakSDK {
 		amount: number,
 		mintAddress: string,
 		onStatus?: (status: string) => void,
+		signer?: TransactionSigner | Keypair,
+		signed?: Signed,
 		_transactionIndex?: number,
 		utxoWalletSigned?: Signed,
 		utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>
@@ -608,24 +631,25 @@ export class CloakSDK {
 			return tx; // Return unsigned transaction
 		};
 		
-		try {
-			// Call depositSpl but intercept the transaction
-			await depositSpl(
-				amount,
-				mintAddress,
-				utxoWalletSigned || this.signed!,
-				this.connection,
-				this.relayerUrl,
-				onStatus,
-				this.hasher,
-				captureTransaction, // Intercept the transaction
-				1, // maxRetries
-				0, // retryCount
-				utxoWalletSigned,
-				utxoWalletSignTransaction,
-				this.circuitPath,
-				this.altAddress,
-			);
+			try {
+				// Call depositSpl but intercept the transaction
+				await depositSpl(
+					amount,
+					mintAddress,
+					signed ?? utxoWalletSigned ?? (await this.resolveSigned(signer)),
+					this.connection,
+					this.relayerUrl,
+					onStatus,
+					this.hasher!,
+					captureTransaction, // Intercept the transaction
+					1, // maxRetries
+					0, // retryCount
+					utxoWalletSigned,
+					utxoWalletSignTransaction,
+					this.circuitPath,
+					this.altAddress,
+					true, // forceFreshDeposit (batch builds should not consolidate)
+				);
 		} catch (err) {
 			// Expected to fail at submission, but we captured the transaction
 			if (!builtTransaction) {
@@ -664,15 +688,18 @@ export class CloakSDK {
 		);
 
 		if (!response.ok) {
-			let errorMsg: string;
-			try {
-				const errorData = (await response.json()) as {
-					error?: any;
-				};
-				errorMsg = errorData.error || `HTTP ${response.status}`;
-			} catch {
-				errorMsg = `HTTP ${response.status}`;
-			}
+				let errorMsg: string;
+				try {
+					const errorData = (await response.json()) as {
+						error?: unknown;
+					};
+					errorMsg =
+						typeof errorData.error === "string"
+							? errorData.error
+							: `HTTP ${response.status}`;
+				} catch {
+					errorMsg = `HTTP ${response.status}`;
+				}
 			throw new Error(`Failed to submit deposit transaction: ${errorMsg}`);
 		}
 
@@ -704,15 +731,18 @@ export class CloakSDK {
 		);
 
 		if (!response.ok) {
-			let errorMsg: string;
-			try {
-				const errorData = (await response.json()) as {
-					error?: any;
-				};
-				errorMsg = errorData.error || `HTTP ${response.status}`;
-			} catch {
-				errorMsg = `HTTP ${response.status}`;
-			}
+				let errorMsg: string;
+				try {
+					const errorData = (await response.json()) as {
+						error?: unknown;
+					};
+					errorMsg =
+						typeof errorData.error === "string"
+							? errorData.error
+							: `HTTP ${response.status}`;
+				} catch {
+					errorMsg = `HTTP ${response.status}`;
+				}
 			throw new Error(`Failed to submit SPL deposit transaction: ${errorMsg}`);
 		}
 
@@ -751,6 +781,8 @@ export class CloakSDK {
 		this.ensureInitialized();
 
 		try {
+			const signer = this.resolveSigner(options.signer);
+			const signed = await this.resolveSigned(signer);
 			const recipientPubkey =
 				typeof options.recipientAddress === "string"
 					? new PublicKey(
@@ -764,17 +796,17 @@ export class CloakSDK {
 				} SOL to ${recipientPubkey.toString()}...`,
 			);
 
-			const result = await withdraw(
-				recipientPubkey,
-				options.amount,
-				this.signed!,
-				this.connection,
-				this.relayerUrl,
-				options.onStatus,
-				this.hasher,
-				options.delayMinutes,
-				options.maxRetries ?? 3,
-				0, // retryCount
+				const result = await withdraw(
+					recipientPubkey,
+					options.amount,
+					signed,
+					this.connection,
+					this.relayerUrl,
+					options.onStatus,
+					this.hasher!,
+					options.delayMinutes,
+					options.maxRetries ?? 3,
+					0, // retryCount
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
@@ -799,10 +831,29 @@ export class CloakSDK {
 					? err.message
 					: String(err);
 			log(`Withdrawal failed: ${errorMessage}`);
+
+			let maxWithdrawableLamports: string | undefined;
+			let maxWithdrawableAmount: number | undefined;
+			if (isCloakError(err)) {
+				const details = err.details as Record<string, unknown> | undefined;
+				if (details && typeof details.maxWithdrawableLamports === "string") {
+					maxWithdrawableLamports = details.maxWithdrawableLamports;
+					try {
+						maxWithdrawableAmount = this.lamportsToSol(
+							BigInt(maxWithdrawableLamports),
+						);
+					} catch {
+						// Ignore conversion issues (extremely large values)
+					}
+				}
+			}
+
 			return {
 				isPartial: false,
 				success: false,
 				error: errorMessage,
+				maxWithdrawableAmount,
+				maxWithdrawableLamports,
 			};
 		}
 	}
@@ -837,6 +888,8 @@ export class CloakSDK {
 		this.ensureInitialized();
 
 		try {
+			const signer = this.resolveSigner(options.signer);
+			const signed = await this.resolveSigned(signer);
 			const recipientPubkey =
 				typeof options.recipientAddress === "string"
 					? new PublicKey(
@@ -850,18 +903,18 @@ export class CloakSDK {
 				}) to ${recipientPubkey.toString()}...`,
 			);
 
-			const result = await withdrawSpl(
-				recipientPubkey,
-				options.amount,
-				options.mintAddress,
-				this.signed!,
-				this.connection,
-				this.relayerUrl,
-				options.onStatus,
-				this.hasher,
-				options.delayMinutes,
-				options.maxRetries ?? 3,
-				0, // retryCount
+				const result = await withdrawSpl(
+					recipientPubkey,
+					options.amount,
+					options.mintAddress,
+					signed,
+					this.connection,
+					this.relayerUrl,
+					options.onStatus,
+					this.hasher!,
+					options.delayMinutes,
+					options.maxRetries ?? 3,
+					0, // retryCount
 				options.utxoWalletSigned,
 				options.utxoWalletSignTransaction,
 				options.providedUtxos,
@@ -930,11 +983,14 @@ export class CloakSDK {
 		this.ensureInitialized();
 
 		const waitSeconds = options.waitSeconds ?? 10;
+		const defaultRecipient = this.requirePublicKey(
+			"fullTransfer requires a signer when recipientAddress is not provided.",
+		);
 		const recipientPubkey = options.recipientAddress
 			? typeof options.recipientAddress === "string"
 				? new PublicKey(options.recipientAddress)
 				: options.recipientAddress
-			: this.publicKey;
+			: defaultRecipient;
 
 		const statusCallback = options.onStatus || (() => {});
 
@@ -995,10 +1051,427 @@ export class CloakSDK {
 	}
 
 	/**
+	 * Transfer SOL from one or more source keypairs to destination keypairs.
+	 *
+	 * It uses `withdrawSol` under the hood, sourcing balance from `in` keypairs
+	 * and splitting destination amounts by BPS (`bps`) or equally when omitted.
+	 */
+	async transfer(options: TransferOptions): Promise<TransferResult> {
+		this.ensureInitialized();
+
+		try {
+			const onStatus = options.onStatus || (() => {});
+			this.validateTransferOptions(options);
+			const requestedLamports = this.solToLamports(options.amount);
+
+				const sourceStates = await Promise.all(
+					options.in.map(async (sourceKeypair) => {
+						const signed = await getAccountSign(sourceKeypair);
+						const balance = await this.getSolBalance(signed, true);
+						const remainingLamports = BigInt(balance.total.toString());
+						return {
+							signer: sourceKeypair,
+							signed,
+							publicKey: sourceKeypair.publicKey.toBase58(),
+							remainingLamports,
+						};
+					}),
+				);
+
+			const totalAvailableLamports = sourceStates.reduce(
+				(sum, source) => sum + source.remainingLamports,
+				0n,
+			);
+
+			if (totalAvailableLamports <= 0n) {
+				return {
+					success: false,
+					requestedAmount: options.amount,
+					attemptedAmount: 0,
+					legs: [],
+					error: "No balance available in source keypairs",
+				};
+			}
+
+			const attemptedLamports =
+				requestedLamports < totalAvailableLamports
+					? requestedLamports
+					: totalAvailableLamports;
+			const attemptedAmount = this.lamportsToSol(attemptedLamports);
+			const destinationAllocations = this.buildDestinationAllocationsLamports(
+				options.out,
+				attemptedLamports,
+				options.bps,
+			);
+
+			const legs: TransferResult["legs"] = [];
+			let sourceIndex = 0;
+			let transferredLamports = 0n;
+
+			for (const allocation of destinationAllocations) {
+				let remainingForDestinationLamports = allocation.amountLamports;
+				if (remainingForDestinationLamports <= 0n) {
+					continue;
+				}
+
+				onStatus(
+					`Transferring ${this.lamportsToSol(remainingForDestinationLamports)} SOL to ${allocation.destination.toBase58()}`,
+				);
+
+				while (
+					remainingForDestinationLamports > 0n &&
+					sourceIndex < sourceStates.length
+				) {
+					const source = sourceStates[sourceIndex];
+					if (source.remainingLamports <= 0n) {
+						sourceIndex++;
+						continue;
+					}
+
+					const legLamports =
+						source.remainingLamports <
+						remainingForDestinationLamports
+							? source.remainingLamports
+							: remainingForDestinationLamports;
+
+					if (legLamports <= 0n) {
+						sourceIndex++;
+						continue;
+					}
+
+						const result = await this.withdrawSol({
+							recipientAddress: allocation.destination,
+							amount: this.lamportsToSol(legLamports),
+							delayMinutes: options.delay,
+							maxRetries: options.maxRetries,
+							signer: source.signer,
+							utxoWalletSigned: source.signed,
+							onStatus: (status) =>
+								onStatus(
+									`[${source.publicKey} -> ${allocation.destination.toBase58()}] ${status}`,
+								),
+						});
+
+					legs.push({
+						from: source.publicKey,
+						to: allocation.destination.toBase58(),
+						requestedAmount: this.lamportsToSol(legLamports),
+						result,
+					});
+
+					if (result.success) {
+						source.remainingLamports -= legLamports;
+						remainingForDestinationLamports -= legLamports;
+						transferredLamports += legLamports;
+					} else {
+						sourceIndex++;
+					}
+				}
+			}
+
+			const allLegsSucceeded =
+				legs.length > 0 &&
+				legs.every((leg) => leg.result.success === true);
+			const fullyTransferred =
+				transferredLamports === attemptedLamports;
+
+			return {
+				success: allLegsSucceeded && fullyTransferred,
+				requestedAmount: options.amount,
+				attemptedAmount,
+				legs,
+				error:
+					legs.length === 0
+						? "No transfer legs were executed"
+						: !fullyTransferred
+							? `Transfer incomplete: ${this.lamportsToSol(attemptedLamports - transferredLamports)} SOL could not be transferred`
+							: undefined,
+			};
+		} catch (err) {
+			return {
+				success: false,
+				requestedAmount: options.amount,
+				attemptedAmount: 0,
+				legs: [],
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	}
+
+	/**
+	 * Transfer all available SOL back to the SDK signer wallet for each keypair
+	 * and best-effort cancel pending delayed withdrawals at the relayer.
+	 */
+	async transferBack(keyPairs: Keypair[]): Promise<TransferBackResult> {
+		this.ensureInitialized();
+
+		try {
+			if (!keyPairs?.length) {
+				throw new Error("transferBack requires at least one keypair");
+			}
+			const recipient = this.requirePublicKey(
+				"transferBack requires an SDK signer as the destination wallet.",
+			);
+
+			const entries: TransferBackResult["entries"] = [];
+
+			for (const keypair of keyPairs) {
+				const signed = await getAccountSign(keypair);
+				const cancellation = await this.cancelPendingDelayedWithdrawals(signed);
+				const balance = await this.getSolBalance(signed, true);
+				const balanceLamports = balance.total.toString();
+				const balanceSol = this.lamportsToSol(BigInt(balanceLamports));
+
+					let withdrawResult: WithdrawResult | undefined;
+					if (balanceSol > 0) {
+						withdrawResult = await this.withdrawSol({
+							recipientAddress: recipient,
+							amount: balanceSol,
+							signer: keypair,
+							utxoWalletSigned: signed,
+							delayMinutes: 0,
+						});
+					}
+
+				entries.push({
+					from: keypair.publicKey.toBase58(),
+					canceledPending: cancellation.canceledPending,
+					cancelWarnings:
+						cancellation.warnings.length > 0
+							? cancellation.warnings
+							: undefined,
+					balanceLamports,
+					withdrawResult,
+				});
+			}
+
+			const success = entries.every(
+				(entry) => !entry.withdrawResult || entry.withdrawResult.success === true,
+			);
+
+			return { success, entries };
+		} catch (err) {
+			return {
+				success: false,
+				entries: [],
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	}
+
+	/**
+	 * Check SOL balances for many keypairs in one call.
+	 */
+	async batchBalanceCheck(keyPairs: Keypair[]): Promise<BatchBalanceEntry[]> {
+		this.ensureInitialized();
+		return await Promise.all(
+			keyPairs.map(async (keypair) => {
+				const signed = await getAccountSign(keypair);
+				const balance = await this.getSolBalance(signed, true);
+				return {
+					publicKey: keypair.publicKey.toBase58(),
+					balance,
+				};
+			}),
+		);
+	}
+
+	private validateTransferOptions(options: TransferOptions): void {
+		if (!options.in?.length) {
+			throw new Error("transfer requires at least one source keypair in `in`");
+		}
+		if (!options.out?.length) {
+			throw new Error("transfer requires at least one destination keypair in `out`");
+		}
+		if (!Number.isFinite(options.amount) || options.amount <= 0) {
+			throw new Error("transfer `amount` must be a positive number");
+		}
+		if (
+			options.delay !== undefined &&
+			(!Number.isFinite(options.delay) || options.delay < 0)
+		) {
+			throw new Error("transfer `delay` must be a non-negative number of minutes");
+		}
+		if (
+			options.delay !== undefined &&
+			!Number.isInteger(options.delay)
+		) {
+			throw new Error("transfer `delay` must be an integer number of minutes");
+		}
+		if (
+			options.delay !== undefined &&
+			options.delay > 10080
+		) {
+			throw new Error("transfer `delay` cannot exceed 10080 minutes (7 days)");
+		}
+	}
+
+	private resolveWalletKey(wallet: Keypair | PublicKey | string): string {
+		if (typeof wallet === "string") {
+			return wallet;
+		}
+		if (wallet instanceof Keypair) {
+			return wallet.publicKey.toBase58();
+		}
+		return wallet.toBase58();
+	}
+
+	private getDestinationBps(
+		bpsMap: Map<Keypair | PublicKey | string, number> | undefined,
+		destination: Keypair,
+	): number {
+		if (!bpsMap || bpsMap.size === 0) {
+			return 0;
+		}
+		const destinationKey = destination.publicKey.toBase58();
+		for (const [wallet, bps] of bpsMap.entries()) {
+			if (this.resolveWalletKey(wallet) === destinationKey) {
+				return Math.max(0, bps);
+			}
+		}
+		return 0;
+	}
+
+	private buildDestinationAllocationsLamports(
+		destinations: Keypair[],
+		totalAmountLamports: bigint,
+		bpsMap?: Map<Keypair | PublicKey | string, number>,
+	): { destination: PublicKey; amountLamports: bigint }[] {
+		const destinationBps = destinations.map((destination) =>
+			this.getDestinationBps(bpsMap, destination),
+		);
+		const hasPositiveBps = destinationBps.some((bps) => bps > 0);
+		const weights = hasPositiveBps
+			? destinationBps.map((bps) => Math.max(0, Math.floor(bps)))
+			: destinations.map(() => 1);
+		const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+		const safeTotalWeight = totalWeight > 0 ? totalWeight : destinations.length;
+
+		const allocations = destinations.map((destination, index) => {
+			const weight = BigInt(weights[index]);
+			const amountLamports =
+				(totalAmountLamports * weight) / BigInt(safeTotalWeight);
+			return {
+				destination: destination.publicKey,
+				amountLamports,
+			};
+		});
+
+		let allocatedLamports = allocations.reduce(
+			(sum, allocation) => sum + allocation.amountLamports,
+			0n,
+		);
+		let remainder = totalAmountLamports - allocatedLamports;
+
+		if (remainder > 0n) {
+			for (let i = 0; i < allocations.length && remainder > 0n; i++) {
+				if (weights[i] <= 0) {
+					continue;
+				}
+				allocations[i].amountLamports += 1n;
+				allocatedLamports += 1n;
+				remainder -= 1n;
+			}
+		}
+
+		return allocations;
+	}
+
+	private solToLamports(amount: number): bigint {
+		const lamports = Math.round(amount * LAMPORTS_PER_SOL);
+		if (!Number.isFinite(lamports) || lamports <= 0) {
+			throw new Error("transfer `amount` is too small after lamport conversion");
+		}
+		return BigInt(lamports);
+	}
+
+	private lamportsToSol(amountLamports: bigint): number {
+		const isNegative = amountLamports < 0n;
+		const absoluteLamports = isNegative
+			? (amountLamports * -1n).toString()
+			: amountLamports.toString();
+		const padded = absoluteLamports.padStart(10, "0");
+		const whole = padded.slice(0, -9);
+		const fraction = padded.slice(-9).replace(/0+$/, "");
+		const solString = fraction
+			? `${whole}.${fraction}`
+			: whole;
+		const value = Number(solString);
+		if (!Number.isFinite(value)) {
+			throw new Error("Lamport value is too large to convert to number");
+		}
+		return isNegative ? -value : value;
+	}
+
+	private async cancelPendingDelayedWithdrawals(
+		signed: Signed,
+	): Promise<{ canceledPending: number; warnings: string[] }> {
+		const warnings: string[] = [];
+		const payload = {
+			publicKey: signed.publicKey.toBase58(),
+			signature: Buffer.from(signed.signature).toString("base64"),
+		};
+
+		const endpoints = [
+			"/withdraw/delayed/cancel/all",
+			"/withdraw/delayed/cancel",
+			"/withdraw/cancel-pending",
+		];
+
+		for (const endpoint of endpoints) {
+			try {
+				const response = await fetchWithRetry(
+					`${this.relayerUrl}${endpoint}`,
+					{
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify(payload),
+					},
+					1,
+				);
+
+				if (!response.ok) {
+					warnings.push(`${endpoint} returned HTTP ${response.status}`);
+					continue;
+				}
+
+				const data = (await response.json()) as {
+					canceled?: number;
+					cancelled?: number;
+					count?: number;
+				};
+
+				return {
+					canceledPending: Number(
+						data.canceled ?? data.cancelled ?? data.count ?? 0,
+					),
+					warnings,
+				};
+			} catch (err) {
+				warnings.push(
+					`${endpoint} failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+
+		return { canceledPending: 0, warnings };
+	}
+
+	/**
 	 * Query the current tree state and check if it has changed
 	 * If changed, triggers UTXO cache refresh
 	 */
 	private async checkAndRefreshTreeState(): Promise<void> {
+		const now = Date.now();
+		if (
+			now - this.lastTreeStateCheckAtMs <
+			this.treeStateCheckIntervalMs
+		) {
+			return;
+		}
+
 		try {
 			const response = await fetchWithRetry(
 				`${this.relayerUrl}/merkle/root`,
@@ -1022,11 +1495,13 @@ export class CloakSDK {
 					// getMyUtxos will automatically fetch the new ones via its cache mechanism
 				}
 
-				// Update last known index
-				this.lastKnownTreeIndex = treeState.nextIndex;
-			}
+					// Update last known index
+					this.lastKnownTreeIndex = treeState.nextIndex;
+				}
 		} catch (err) {
 			// Silently fail - balance check will proceed with cached data
+		} finally {
+			this.lastTreeStateCheckAtMs = now;
 		}
 	}
 
@@ -1042,19 +1517,24 @@ export class CloakSDK {
 	 * console.log('Number of UTXOs:', balance.count);
 	 * ```
 	 */
-	async getSolBalance(utxoWalletSigned?: Signed, forceRefresh: boolean = false): Promise<UtxoBalance> {
+	async getSolBalance(
+		utxoWalletSigned?: Signed,
+		forceRefresh: boolean = false,
+		signer?: TransactionSigner | Keypair,
+	): Promise<UtxoBalance> {
 		this.ensureInitialized();
 
 		try {
+			const signed = await this.resolveSigned(signer, utxoWalletSigned);
 			// Check if tree state has changed before fetching UTXOs
 			await this.checkAndRefreshTreeState();
 
 			const utxos = await getMyUtxos(
-				utxoWalletSigned || this.signed!,
+				signed,
 				this.connection,
 				this.relayerUrl,
 				undefined,
-				this.hasher,
+				this.hasher!,
 				forceRefresh, // Pass forceRefresh to getMyUtxos
 			);
 
@@ -1129,19 +1609,21 @@ export class CloakSDK {
 		mintAddress: string,
 		utxoWalletSigned?: Signed,
 		forceRefresh: boolean = false,
+		signer?: TransactionSigner | Keypair,
 	): Promise<UtxoBalance> {
 		this.ensureInitialized();
 
 		try {
+			const signed = await this.resolveSigned(signer, utxoWalletSigned);
 			// Check if tree state has changed before fetching UTXOs
 			await this.checkAndRefreshTreeState();
 
 			const utxos = await getMyUtxos(
-				utxoWalletSigned || this.signed!,
+				signed,
 				this.connection,
 				this.relayerUrl,
 				undefined,
-				this.hasher,
+				this.hasher!,
 				forceRefresh,
 			);
 
@@ -1206,7 +1688,9 @@ export class CloakSDK {
 	 * @returns User's Solana public key
 	 */
 	getPublicKey(): PublicKey {
-		return this.publicKey;
+		return this.requirePublicKey(
+			"No signer configured for this SDK instance.",
+		);
 	}
 
 	/**
@@ -1223,19 +1707,20 @@ export class CloakSDK {
 	 *
 	 * @returns Promise resolving to array of fresh UTXOs
 	 */
-	async refreshUtxos(): Promise<any[]> {
-		if (!this.signed || !this.hasher) {
+	async refreshUtxos(): Promise<Utxo[]> {
+		if (!this.hasher) {
 			throw new ConfigurationError(
 				ErrorCodes.NOT_INITIALIZED,
 				"SDK not initialized. Call initialize() first.",
 			);
 		}
+		const signed = await this.resolveSigned();
 		return await refreshUtxos(
-			this.signed,
+			signed,
 			this.connection,
 			this.relayerUrl,
 			undefined,
-			this.hasher,
+			this.hasher!,
 		);
 	}
 
@@ -1249,6 +1734,70 @@ export class CloakSDK {
 	}
 
 	/**
+	 * Set or replace the SDK signer after initialization.
+	 */
+	setSigner(signer: TransactionSigner | Keypair): void {
+		this.signer = signer;
+		this.publicKey = signer.publicKey;
+	}
+
+	/**
+	 * Clear the currently configured signer.
+	 */
+	clearSigner(): void {
+		this.signer = null;
+		this.publicKey = null;
+		this.accountSignCache.clear();
+	}
+
+	private requirePublicKey(errorMessage: string): PublicKey {
+		if (!this.publicKey) {
+			throw new ConfigurationError(
+				ErrorCodes.INVALID_CONFIGURATION,
+				errorMessage,
+			);
+		}
+		return this.publicKey;
+	}
+
+	private resolveSigner(
+		operationSigner?: TransactionSigner | Keypair,
+	): TransactionSigner | Keypair {
+		const signer = operationSigner ?? this.signer;
+		if (!signer) {
+			throw new ConfigurationError(
+				ErrorCodes.INVALID_CONFIGURATION,
+				"No signer configured. Provide `signer` in constructor, call `setSigner(...)`, or pass `options.signer` for this operation.",
+			);
+		}
+		if (operationSigner) {
+			this.signer = operationSigner;
+			this.publicKey = operationSigner.publicKey;
+		}
+		return signer;
+	}
+
+	private async resolveSigned(
+		operationSigner?: TransactionSigner | Keypair,
+		signedOverride?: Signed,
+	): Promise<Signed> {
+		if (signedOverride) {
+			return signedOverride;
+		}
+
+		const signer = this.resolveSigner(operationSigner);
+		const signerKey = signer.publicKey.toBase58();
+		const cachedSigned = this.accountSignCache.get(signerKey);
+		if (cachedSigned) {
+			return cachedSigned;
+		}
+
+		const signed = await this.generateAccountSignForSigner(signer);
+		this.accountSignCache.set(signerKey, signed);
+		return signed;
+	}
+
+	/**
 	 * Generate account signature for UTXO encryption
 	 * Works with both Keypair and wallet adapter
 	 *
@@ -1258,16 +1807,18 @@ export class CloakSDK {
 	 * @returns Promise resolving to signed account info
 	 * @private
 	 */
-	private async generateAccountSign(): Promise<Signed> {
-		if (isKeypair(this.signer)) {
-			return await getAccountSign(this.signer);
+	private async generateAccountSignForSigner(
+		signer: TransactionSigner | Keypair,
+	): Promise<Signed> {
+		if (isKeypair(signer)) {
+			return await getAccountSign(signer);
 		} else {
 			// For wallet adapters, create a deterministic signature from the public key
 			// This avoids requiring user approval for account initialization
 			const message = new TextEncoder().encode(
 				"Cloak Privacy Account",
 			);
-			const publicKeyBytes = this.publicKey.toBytes();
+			const publicKeyBytes = signer.publicKey.toBytes();
 
 			// Create a deterministic "signature" by hashing the public key + message
 			// This is used for encryption key derivation, not authentication
@@ -1284,7 +1835,7 @@ export class CloakSDK {
 			signature.set(hash, 32);
 
 			return {
-				publicKey: this.publicKey,
+				publicKey: signer.publicKey,
 				signature,
 			};
 		}
@@ -1299,12 +1850,14 @@ export class CloakSDK {
 	 */
 	private async signTransaction(
 		transaction: VersionedTransaction,
+		operationSigner?: TransactionSigner | Keypair,
 	): Promise<VersionedTransaction> {
-		if (isKeypair(this.signer)) {
-			transaction.sign([this.signer]);
+		const signer = this.resolveSigner(operationSigner);
+		if (isKeypair(signer)) {
+			transaction.sign([signer]);
 			return transaction;
 		} else {
-			return await this.signer.signTransaction(transaction);
+			return await signer.signTransaction(transaction);
 		}
 	}
 

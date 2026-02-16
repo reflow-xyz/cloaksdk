@@ -5,12 +5,8 @@ import BN from "bn.js";
 import { Keypair as UtxoKeypair } from "../models/keypair";
 import { Utxo } from "../models/utxo";
 import { EncryptionService } from "./encryption";
-//@ts-ignore
 import * as ffjavascript from "ffjavascript";
-import {
-	FETCH_UTXOS_GROUP_SIZE,
-	PROGRAM_ID,
-} from "./constants";
+import { FETCH_UTXOS_GROUP_SIZE, PROGRAM_ID } from "./constants";
 import { fetchWithRetry } from "./fetchWithRetry";
 import type {
 	StatusCallback,
@@ -27,7 +23,10 @@ const DECRYPTION_BATCH_SIZE = 500; // Process 500 UTXOs in parallel
 import type { Signed } from "./getAccountSign";
 
 // Use type assertion for the utility functions (same pattern as in get_verification_keys.ts)
-const utils = ffjavascript.utils as any;
+const utils = ffjavascript.utils as unknown as {
+	unstringifyBigInts: (value: string) => unknown;
+	leInt2Buff: (value: unknown, size: number) => Uint8Array;
+};
 const { unstringifyBigInts, leInt2Buff } = utils;
 
 function sleep(ms: number): Promise<string> {
@@ -57,6 +56,7 @@ let utxoCache: UtxoCache | null = null;
  */
 export function clearUtxoCache() {
 	utxoCache = null;
+	spentStatusCache.clear();
 }
 
 /**
@@ -66,17 +66,30 @@ export async function refreshUtxos(
 	signed: Signed,
 	connection: Connection,
 	relayerUrl: string,
-	setStatus?: any,
-	hasher?: any,
+	setStatus?: StatusCallback,
+	hasher?: LightWasm,
 ): Promise<Utxo[]> {
 	clearUtxoCache();
-	return getMyUtxos(signed, connection, relayerUrl, setStatus, hasher, true);
+	return getMyUtxos(
+		signed,
+		connection,
+		relayerUrl,
+		setStatus,
+		hasher,
+		true,
+	);
 }
 
 let getMyUtxosPromise: Promise<FetchedUtxoBatch> | null = null;
-let currentSetStatus: StatusCallback | null = null;
 let roundStartIndex = 0;
 let decryptionTaskFinished = 0;
+
+// Cache spent-status checks briefly to reduce repeated RPC pressure during retries.
+const SPENT_STATUS_CACHE_TTL_MS = 30_000;
+const spentStatusCache = new Map<
+	string,
+	{ spent: boolean; checkedAt: number }
+>();
 
 /**
  * Decrypt cached encrypted outputs for a specific wallet
@@ -86,7 +99,6 @@ async function decryptCachedOutputs(
 	signed: Signed,
 	connection: Connection,
 	hasher: LightWasm,
-	relayerUrl: string,
 ): Promise<Utxo[]> {
 	const lightWasm = hasher;
 
@@ -110,12 +122,21 @@ async function decryptCachedOutputs(
 	// Decrypt all encrypted outputs in batches
 	const BATCH_SIZE = 500;
 	for (let i = 0; i < encryptedOutputs.length; i += BATCH_SIZE) {
-		const batch = encryptedOutputs.slice(i, Math.min(i + BATCH_SIZE, encryptedOutputs.length));
+		const batch = encryptedOutputs.slice(
+			i,
+			Math.min(i + BATCH_SIZE, encryptedOutputs.length),
+		);
 
 		const batchResults = await Promise.all(
-			batch.map(encryptedOutput =>
-				decrypt_output(encryptedOutput, encryptionService, utxoKeypair, lightWasm, connection)
-			)
+			batch.map((encryptedOutput) =>
+				decrypt_output(
+					encryptedOutput,
+					encryptionService,
+					utxoKeypair,
+					lightWasm,
+					connection,
+				),
+			),
 		);
 
 		// Filter for successfully decrypted, non-zero UTXOs
@@ -147,11 +168,15 @@ async function decryptCachedOutputs(
 		}
 	}
 
-	log(`[SDK] Decryption results: ${decryptedCount} decrypted, ${zeroAmountCount} zero-amount, ${duplicateCount} duplicates, ${candidateUtxos.length} candidates`);
+	log(
+		`[SDK] Decryption results: ${decryptedCount} decrypted, ${zeroAmountCount} zero-amount, ${duplicateCount} duplicates, ${candidateUtxos.length} candidates`,
+	);
 
 	// Log candidate UTXOs with details
 	candidateUtxos.forEach((utxo, i) => {
-		log(`[SDK]   Candidate UTXO ${i + 1}: amount=${utxo.amount.toString()}, mintAddress=${utxo.mintAddress}, index=${utxo.index}`);
+		log(
+			`[SDK]   Candidate UTXO ${i + 1}: amount=${utxo.amount.toString()}, mintAddress=${utxo.mintAddress}, index=${utxo.index}`,
+		);
 	});
 
 	if (candidateUtxos.length === 0) {
@@ -159,10 +184,17 @@ async function decryptCachedOutputs(
 	}
 
 	// Batch check if UTXOs are spent (must be AFTER index update!)
-	log(`[SDK DEBUG CACHE] About to check spent status for ${candidateUtxos.length} candidate UTXOs`);
-	const spentStatuses = await batchCheckUtxosSpent(connection, candidateUtxos);
-	const spentCount = spentStatuses.filter(s => s).length;
-	log(`[SDK DEBUG CACHE] Spent check complete: ${spentCount} spent, ${candidateUtxos.length - spentCount} unspent`);
+	log(
+		`[SDK DEBUG CACHE] About to check spent status for ${candidateUtxos.length} candidate UTXOs`,
+	);
+	const spentStatuses = await batchCheckUtxosSpent(
+		connection,
+		candidateUtxos,
+	);
+	const spentCount = spentStatuses.filter((s) => s).length;
+	log(
+		`[SDK DEBUG CACHE] Spent check complete: ${spentCount} spent, ${candidateUtxos.length - spentCount} unspent`,
+	);
 
 	// Filter out spent UTXOs and log which ones are kept
 	const validUtxos: Utxo[] = [];
@@ -174,18 +206,26 @@ async function decryptCachedOutputs(
 		}
 	});
 
-	log(`[SDK] Final UTXOs: ${validUtxos.length} valid (${spentCount} were spent)`);
+	log(
+		`[SDK] Final UTXOs: ${validUtxos.length} valid (${spentCount} were spent)`,
+	);
 	if (validUtxos.length > 0 && validUtxos.length < 20) {
-		log(`[SDK DEBUG CACHE] Unspent UTXO indices in candidate list: ${unspentIndices.join(', ')}`);
+		log(
+			`[SDK DEBUG CACHE] Unspent UTXO indices in candidate list: ${unspentIndices.join(", ")}`,
+		);
 		validUtxos.slice(0, 5).forEach(async (utxo, i) => {
 			const nullifier = await utxo.getNullifier();
-			log(`[SDK DEBUG CACHE] Unspent UTXO ${i}: index=${utxo.index}, nullifier=${nullifier}`);
+			log(
+				`[SDK DEBUG CACHE] Unspent UTXO ${i}: index=${utxo.index}, nullifier=${nullifier}`,
+			);
 		});
 	}
 
 	// Log final valid UTXOs
 	validUtxos.forEach((utxo, i) => {
-		log(`[SDK]   Valid UTXO ${i + 1}: amount=${utxo.amount.toString()}, mintAddress=${utxo.mintAddress}, index=${utxo.index}`);
+		log(
+			`[SDK]   Valid UTXO ${i + 1}: amount=${utxo.amount.toString()}, mintAddress=${utxo.mintAddress}, index=${utxo.index}`,
+		);
 	});
 
 	return validUtxos;
@@ -218,48 +258,80 @@ export async function getMyUtxos(
 		throw new Error("getMyUtxos:no relayerUrl");
 	}
 
+	type RemoteTreeState = { root: string; nextIndex: number };
+	let treeStatePromise: Promise<RemoteTreeState> | null = null;
+
 	// Helper to query tree state
-	async function queryRemoteTreeState() {
-		try {
-			const prepareResponse = await fetchWithRetry(
-				`${relayerUrl}/tx/prepare`,
+	async function queryRemoteTreeState(
+		forceRefresh: boolean = false,
+	): Promise<RemoteTreeState> {
+		if (!forceRefresh && treeStatePromise) {
+			return await treeStatePromise;
+		}
+
+		treeStatePromise = (async () => {
+			const prepareUrl = `${relayerUrl}/tx/prepare`;
+			const fallbackUrl = `${relayerUrl}/merkle/root`;
+			let prepareStatus: number | null = null;
+			try {
+				const prepareResponse = await fetchWithRetry(
+					prepareUrl,
+					undefined,
+					3,
+				);
+				prepareStatus = prepareResponse.status;
+				if (prepareResponse.ok) {
+					return (await prepareResponse.json()) as RemoteTreeState;
+				}
+			} catch {
+				// Backwards compatibility fallback below.
+			}
+
+			const fallbackResponse = await fetchWithRetry(
+				fallbackUrl,
 				undefined,
 				3,
 			);
-			if (prepareResponse.ok) {
-				const prepareData = await prepareResponse.json() as { root: string; nextIndex: number };
-				return prepareData;
+			if (!fallbackResponse.ok) {
+				const body = await fallbackResponse.text().catch(() => "");
+				throw new Error(
+					`Relayer tree-state endpoint not found. Tried ${prepareUrl} (HTTP ${prepareStatus ?? "error"}) then ${fallbackUrl} (HTTP ${fallbackResponse.status}). Body: ${body.slice(0, 200)}`,
+				);
 			}
-		} catch {
-			// Backwards compatibility fallback below.
-		}
+			return (await fallbackResponse.json()) as RemoteTreeState;
+		})();
 
-		const fallbackResponse = await fetchWithRetry(
-			`${relayerUrl}/merkle/root`,
-			undefined,
-			3,
-		);
-		if (!fallbackResponse.ok) {
-			throw new Error(`Failed to fetch tree state: ${fallbackResponse.status}`);
-		}
-		return await fallbackResponse.json() as { root: string; nextIndex: number };
+		return await treeStatePromise;
 	}
 
 	// Check if we have cached encrypted outputs
-	log(`[SDK DEBUG] forceRefresh=${forceRefresh}, utxoCache=${utxoCache ? 'exists' : 'null'}, cacheLength=${utxoCache?.encryptedOutputs?.length || 0}`);
-	if (!forceRefresh && utxoCache && utxoCache.encryptedOutputs.length > 0) {
-		log(`[SDK] Using cached data. Cache has ${utxoCache.encryptedOutputs.length} encrypted outputs, lastFetchedIndex: ${utxoCache.lastFetchedIndex}`);
+	log(
+		`[SDK DEBUG] forceRefresh=${forceRefresh}, utxoCache=${utxoCache ? "exists" : "null"}, cacheLength=${utxoCache?.encryptedOutputs?.length || 0}`,
+	);
+	if (
+		!forceRefresh &&
+		utxoCache &&
+		utxoCache.encryptedOutputs.length > 0
+	) {
+		log(
+			`[SDK] Using cached data. Cache has ${utxoCache.encryptedOutputs.length} encrypted outputs, lastFetchedIndex: ${utxoCache.lastFetchedIndex}`,
+		);
 
 		// Check if there are new encrypted outputs to fetch
 		const currentTreeState = await queryRemoteTreeState();
 		const totalUtxosInTree = currentTreeState.nextIndex;
 
-		log(`[SDK] Current tree state: ${totalUtxosInTree} total UTXOs`);
+		log(
+			`[SDK] Current tree state: ${totalUtxosInTree} total UTXOs`,
+		);
 
 		if (totalUtxosInTree > utxoCache.lastFetchedIndex) {
 			// Fetch new encrypted outputs
-			const newUtxoCount = totalUtxosInTree - utxoCache.lastFetchedIndex;
-			log(`[SDK] Fetching ${newUtxoCount} new UTXOs (${utxoCache.lastFetchedIndex} -> ${totalUtxosInTree})`);
+			const newUtxoCount =
+				totalUtxosInTree - utxoCache.lastFetchedIndex;
+			log(
+				`[SDK] Fetching ${newUtxoCount} new UTXOs (${utxoCache.lastFetchedIndex} -> ${totalUtxosInTree})`,
+			);
 			setStatus?.(`(loading ${newUtxoCount} new utxos...)`);
 
 			const url = `${relayerUrl}/utxos/range?start=${utxoCache.lastFetchedIndex}&end=${totalUtxosInTree}`;
@@ -272,39 +344,54 @@ export async function getMyUtxos(
 				utxoCache.lastFetchedIndex,
 			);
 
-			log(`[SDK] Fetched ${newBatch.encryptedOutputs.length} new encrypted outputs`);
+			log(
+				`[SDK] Fetched ${newBatch.encryptedOutputs.length} new encrypted outputs`,
+			);
 
 			// Add new encrypted outputs to cache
-			utxoCache.encryptedOutputs.push(...newBatch.encryptedOutputs);
+			utxoCache.encryptedOutputs.push(
+				...newBatch.encryptedOutputs,
+			);
 			utxoCache.lastFetchedIndex = totalUtxosInTree;
 
-			log(`[SDK] Cache now has ${utxoCache.encryptedOutputs.length} encrypted outputs`);
+			log(
+				`[SDK] Cache now has ${utxoCache.encryptedOutputs.length} encrypted outputs`,
+			);
 		} else {
 			log(`[SDK] No new UTXOs to fetch`);
 		}
 
 		// Decrypt all cached encrypted outputs with THIS wallet's signature
-		setStatus?.(`(decrypting ${utxoCache.encryptedOutputs.length} utxos...)`);
-
-		log(`[SDK DEBUG CACHE] About to call decryptCachedOutputs with ${utxoCache.encryptedOutputs.length} encrypted outputs`);
-
-		// Decrypt with the provided wallet signature
-		const decryptedUtxos = await decryptCachedOutputs(
-			utxoCache.encryptedOutputs,
-			signed,
-			connection,
-			hasher,
-			relayerUrl,
+		setStatus?.(
+			`(decrypting ${utxoCache.encryptedOutputs.length} utxos...)`,
 		);
 
-		log(`[SDK DEBUG CACHE] decryptCachedOutputs returned ${decryptedUtxos.length} valid UTXOs`);
+		log(
+			`[SDK DEBUG CACHE] About to call decryptCachedOutputs with ${utxoCache.encryptedOutputs.length} encrypted outputs`,
+		);
+
+			// Decrypt with the provided wallet signature
+			const decryptedUtxos = await decryptCachedOutputs(
+				utxoCache.encryptedOutputs,
+				signed,
+				connection,
+				hasher,
+			);
+
+		log(
+			`[SDK DEBUG CACHE] decryptCachedOutputs returned ${decryptedUtxos.length} valid UTXOs`,
+		);
 
 		return decryptedUtxos;
 	}
 
 	// Always fetch fresh UTXOs - no caching
-	log(`[SDK DEBUG] Taking FRESH FETCH path - will fetch all UTXOs from relayer`);
-	const loadUtxos = async (statusCallback?: StatusCallback): Promise<FetchedUtxoBatch> => {
+	log(
+		`[SDK DEBUG] Taking FRESH FETCH path - will fetch all UTXOs from relayer`,
+	);
+	const loadUtxos = async (
+		statusCallback?: StatusCallback,
+	): Promise<FetchedUtxoBatch> => {
 		statusCallback?.(`(loading utxos...)`);
 		let valid_utxos: Utxo[] = [];
 		let all_encrypted_outputs: string[] = [];
@@ -318,10 +405,17 @@ export async function getMyUtxos(
 			// OPTIMIZATION: Fetch all batches in parallel first
 			const treeState = await queryRemoteTreeState();
 			const totalUtxos = treeState.nextIndex;
-			const batchPromises: Promise<any>[] = [];
+			const batchPromises: Promise<FetchedUtxoBatch>[] = [];
 
-			for (let offset = 0; offset < totalUtxos; offset += FETCH_UTXOS_GROUP_SIZE) {
-				const end = Math.min(offset + FETCH_UTXOS_GROUP_SIZE, totalUtxos);
+			for (
+				let offset = 0;
+				offset < totalUtxos;
+				offset += FETCH_UTXOS_GROUP_SIZE
+			) {
+				const end = Math.min(
+					offset + FETCH_UTXOS_GROUP_SIZE,
+					totalUtxos,
+				);
 				const url = `${relayerUrl}/utxos/range?start=${offset}&end=${end}`;
 				batchPromises.push(
 					fetchUserUtxos(
@@ -331,7 +425,7 @@ export async function getMyUtxos(
 						statusCallback,
 						hasher,
 						offset,
-					)
+					),
 				);
 			}
 
@@ -339,17 +433,23 @@ export async function getMyUtxos(
 
 			// Collect all encrypted outputs from all batches
 			for (const batch of allBatches) {
-				all_encrypted_outputs.push(...batch.encryptedOutputs);
+				all_encrypted_outputs.push(
+					...batch.encryptedOutputs,
+				);
 			}
 
-			log(`[SDK DEBUG] Fetched ${all_encrypted_outputs.length} encrypted outputs from relayer`);
+			log(
+				`[SDK DEBUG] Fetched ${all_encrypted_outputs.length} encrypted outputs from relayer`,
+			);
 
 			// Log how many UTXOs were decrypted successfully
 			let totalDecryptedUtxos = 0;
 			for (const batch of allBatches) {
 				totalDecryptedUtxos += batch.utxos.length;
 			}
-			log(`[SDK DEBUG] Successfully decrypted ${totalDecryptedUtxos} UTXOs out of ${all_encrypted_outputs.length} encrypted outputs`);
+			log(
+				`[SDK DEBUG] Successfully decrypted ${totalDecryptedUtxos} UTXOs out of ${all_encrypted_outputs.length} encrypted outputs`,
+			);
 
 			// Process all batches
 			for (const fetched of allBatches) {
@@ -371,7 +471,9 @@ export async function getMyUtxos(
 						),
 					);
 
-				log(`[SDK DEBUG] Checked ${nonZeroUtxos.length} UTXOs for spent status, ${spentStatuses.filter(s => !s).length} are unspent`);
+				log(
+					`[SDK DEBUG] Checked ${nonZeroUtxos.length} UTXOs for spent status, ${spentStatuses.filter((s) => !s).length} are unspent`,
+				);
 
 				// Process results
 				for (let i = 0; i < nonZeroUtxos.length; i++) {
@@ -407,17 +509,21 @@ export async function getMyUtxos(
 		statusCallback?.(
 			`Processing ${valid_utxos.length} transactions...`,
 		);
-		return { utxos: valid_utxos, encryptedOutputs: all_encrypted_outputs, hashMore: false };
+		return {
+			utxos: valid_utxos,
+			encryptedOutputs: all_encrypted_outputs,
+			hashMore: false,
+		};
 	};
 
-	// If there's already a promise running, wait for it
-	if (getMyUtxosPromise && currentSetStatus === setStatus) {
+	// If there's already a promise running, wait for it.
+	// This prevents duplicate relayer scans for concurrent requests.
+	if (getMyUtxosPromise) {
 		const result = await getMyUtxosPromise;
 		return result.utxos;
 	}
 
 	// Create and store new promise
-	currentSetStatus = setStatus ?? null;
 	getMyUtxosPromise = loadUtxos(setStatus);
 
 	try {
@@ -425,13 +531,17 @@ export async function getMyUtxos(
 
 		// Populate encrypted output cache after successful fetch
 		const treeState = await queryRemoteTreeState();
-		log(`[SDK] Populating cache with ${result.encryptedOutputs.length} encrypted outputs, tree nextIndex: ${treeState.nextIndex}`);
+		log(
+			`[SDK] Populating cache with ${result.encryptedOutputs.length} encrypted outputs, tree nextIndex: ${treeState.nextIndex}`,
+		);
 		utxoCache = {
 			encryptedOutputs: result.encryptedOutputs, // Store all encrypted outputs for future decryption with different wallets
 			lastFetchedIndex: treeState.nextIndex,
 		};
 
-		log(`[SDK] Returning ${result.utxos.length} UTXOs from initial load`);
+		log(
+			`[SDK] Returning ${result.utxos.length} UTXOs from initial load`,
+		);
 
 		return result.utxos;
 	} finally {
@@ -439,64 +549,6 @@ export async function getMyUtxos(
 		getMyUtxosPromise = null;
 	}
 }
-
-// Unused function - kept for potential future use
-// /**
-//  * Incrementally load only new UTXOs from a specific index range
-//  */
-// async function loadUtxosIncremental(
-// 	signed: Signed,
-// 	connection: Connection,
-// 	setStatus: any,
-// 	hasher: any,
-// 	startIndex: number,
-// 	endIndex: number,
-// ): Promise<Utxo[]> {
-// 	const validUtxos: Utxo[] = [];
-// 	let fetchOffset = startIndex;
-
-// 	while (fetchOffset < endIndex) {
-// 		const fetchEnd = Math.min(fetchOffset + FETCH_UTXOS_GROUP_SIZE, endIndex);
-// 		const url = `${relayerUrl}/utxos/range?start=${fetchOffset}&end=${fetchEnd}`;
-
-// 		const fetched = await fetchUserUtxos(
-// 			signed,
-// 			connection,
-// 			url,
-// 			setStatus,
-// 			hasher,
-// 		);
-
-// 		// Filter and add non-zero UTXOs
-// 		for (const utxo of fetched.utxos) {
-// 			if (utxo.amount.toNumber() > 0) {
-// 				// Update UTXO index from merkle tree
-// 				try {
-// 					const commitment = await utxo.getCommitment();
-// 					const merkleProofResponse = await fetchWithRetry(
-// 						`${relayerUrl}/merkle/proof/${commitment}`,
-// 						undefined,
-// 						3,
-// 					);
-// 					if (merkleProofResponse.ok) {
-// 						const merkleProof = await merkleProofResponse.json() as { index: number };
-// 						utxo.index = merkleProof.index;
-// 						validUtxos.push(utxo);
-// 					}
-// 				} catch (err) {
-// 					warn(`Failed to fetch merkle proof for UTXO:`, err);
-// 				}
-// 			}
-// 		}
-
-// 		if (!fetched.hashMore) {
-// 			break;
-// 		}
-// 		fetchOffset = fetchEnd;
-// 	}
-
-// 	return validUtxos;
-// }
 
 /**
  * Fetch and decrypt UTXOs from apiUrl
@@ -509,8 +561,8 @@ async function fetchUserUtxos(
 	signed: Signed,
 	connection: Connection,
 	apiUrl: string,
-	setStatus?: Function,
-	hasher?: any,
+	setStatus?: StatusCallback,
+	hasher?: LightWasm,
 	startIndex: number = 0,
 ): Promise<{
 	encryptedOutputs: string[];
@@ -520,7 +572,7 @@ async function fetchUserUtxos(
 }> {
 	try {
 		if (!hasher) {
-			throw new Error("fetchUserUtxos: no hashser");
+			throw new Error("fetchUserUtxos: no hasher");
 		}
 		// Initialize the light protocol hasher
 		// const lightWasm = await getHasher()
@@ -540,7 +592,9 @@ async function fetchUserUtxos(
 
 		// Fetch all UTXOs from the API
 		let encryptedOutputs: string[] = [];
-		let response: AxiosResponse<any, any>;
+		let response: AxiosResponse<unknown>;
+		let hasMore = false;
+		let responseTotal = roundStartIndex;
 		try {
 			response = await axios.get(url);
 
@@ -556,13 +610,18 @@ async function fetchUserUtxos(
 					.map((utxo) => utxo.encrypted_output);
 			} else if (
 				typeof response.data === "object" &&
-				response.data.encrypted_outputs
+				response.data !== null &&
+				"encrypted_outputs" in response.data
 			) {
 				// Handle the case where the API returns an object with encrypted_outputs array
 				const apiResponse =
 					response.data as ApiUtxoResponse;
 				encryptedOutputs =
 					apiResponse.encrypted_outputs;
+				hasMore = Boolean(apiResponse.hasMore);
+				if (typeof apiResponse.total === "number") {
+					responseTotal = apiResponse.total;
+				}
 			} else {
 				error(
 					`API returned unexpected data format: ${JSON.stringify(
@@ -570,9 +629,13 @@ async function fetchUserUtxos(
 					).substring(0, 100)}...`,
 				);
 			}
-		} catch (apiError: any) {
+		} catch (apiError: unknown) {
 			throw new Error(
-				`API request failed: ${apiError.message}`,
+				`API request failed: ${
+					apiError instanceof Error
+						? apiError.message
+						: String(apiError)
+				}`,
 			);
 		}
 
@@ -580,7 +643,10 @@ async function fetchUserUtxos(
 		const myUtxos: Utxo[] = [];
 		const myEncryptedOutputs: string[] = [];
 
-		let decryptionTaskTotal = response.data.total - roundStartIndex;
+		const decryptionTaskTotal = Math.max(
+			encryptedOutputs.length,
+			responseTotal - roundStartIndex,
+		);
 
 		// Process encrypted outputs in parallel batches - only fresh from API
 		for (
@@ -621,7 +687,8 @@ async function fetchUserUtxos(
 			batchResults.forEach((dres, index) => {
 				decryptionTaskFinished++;
 				if (dres.status == "decrypted" && dres.utxo) {
-					dres.utxo.index = startIndex + i + index;
+					dres.utxo.index =
+						startIndex + i + index;
 					myUtxos.push(dres.utxo);
 					myEncryptedOutputs.push(batch[index]);
 				}
@@ -631,11 +698,14 @@ async function fetchUserUtxos(
 		return {
 			encryptedOutputs: encryptedOutputs, // Return ALL encrypted outputs, not just the ones we decrypted
 			utxos: myUtxos,
-			hashMore: response.data.hasMore,
+			hashMore: hasMore,
 			len: encryptedOutputs.length,
 		};
-	} catch (error: any) {
-		error("Error fetching UTXOs:", error.message);
+	} catch (err: unknown) {
+		error(
+			"Error fetching UTXOs:",
+			err instanceof Error ? err.message : String(err),
+		);
 		return {
 			encryptedOutputs: [],
 			utxos: [],
@@ -658,12 +728,13 @@ async function batchCheckUtxosSpent(
 	if (utxos.length === 0) return [];
 
 	try {
-		// Generate all nullifier PDAs for all UTXOs
-		const allPDAs: PublicKey[] = [];
-		const utxoPDAMap = new Map<
-			number,
-			{ nullifier0Index: number; nullifier1Index: number }
-		>();
+		// Generate nullifier metadata for all UTXOs.
+		const now = Date.now();
+		const nullifierHexes: string[] = [];
+		const spentStatuses: boolean[] = new Array(utxos.length).fill(
+			false,
+		);
+		const uncachedIndices: number[] = [];
 
 		for (let i = 0; i < utxos.length; i++) {
 			const utxo = utxos[i];
@@ -671,7 +742,39 @@ async function batchCheckUtxosSpent(
 			const nullifierBytes = Array.from(
 				leInt2Buff(unstringifyBigInts(nullifier), 32),
 			).reverse() as number[];
-			const nullifierBuffer = Buffer.from(nullifierBytes);
+			const nullifierHex =
+				Buffer.from(nullifierBytes).toString("hex");
+			nullifierHexes.push(nullifierHex);
+
+			const cached = spentStatusCache.get(nullifierHex);
+			if (
+				cached &&
+				now - cached.checkedAt <
+					SPENT_STATUS_CACHE_TTL_MS
+			) {
+				spentStatuses[i] = cached.spent;
+			} else {
+				uncachedIndices.push(i);
+			}
+		}
+
+		// Everything was served from cache.
+		if (uncachedIndices.length === 0) {
+			return spentStatuses;
+		}
+
+		// Generate PDAs only for uncached UTXOs.
+		const allPDAs: PublicKey[] = [];
+		const utxoPDAMap = new Map<
+			number,
+			{ nullifier0Index: number; nullifier1Index: number }
+		>();
+
+		for (const i of uncachedIndices) {
+			const nullifierBuffer = Buffer.from(
+				nullifierHexes[i],
+				"hex",
+			);
 
 			const [nullifier0PDA] =
 				PublicKey.findProgramAddressSync(
@@ -703,8 +806,10 @@ async function batchCheckUtxosSpent(
 			utxoPDAMap.set(i, { nullifier0Index, nullifier1Index });
 		}
 
-		// Fetch all accounts in batches of 100
-		const BATCH_SIZE = 100;
+		// Fetch all accounts in batches with retry/backoff to reduce rate-limit failures.
+		const BATCH_SIZE = 50;
+		const MAX_RETRIES = 4;
+		const BASE_DELAY_MS = 300;
 		const allAccountInfos: (
 			| import("@solana/web3.js").AccountInfo<Buffer>
 			| null
@@ -715,35 +820,92 @@ async function batchCheckUtxosSpent(
 				i,
 				Math.min(i + BATCH_SIZE, allPDAs.length),
 			);
-			const batchResults =
-				await connection.getMultipleAccountsInfo(batch);
+				let batchResults:
+					| (
+							| import("@solana/web3.js").AccountInfo<Buffer>
+							| null
+					  )[]
+					| null = null;
+				let lastErr: unknown = null;
+
+			for (
+				let attempt = 0;
+				attempt <= MAX_RETRIES;
+				attempt++
+			) {
+				try {
+					batchResults =
+						await connection.getMultipleAccountsInfo(
+							batch,
+						);
+					break;
+				} catch (err: unknown) {
+						lastErr = err;
+						const msg = String(
+							err instanceof Error
+								? err.message
+								: err,
+						).toLowerCase();
+					const isRateLimit =
+						msg.includes("429") ||
+						msg.includes(
+							"too many requests",
+						);
+					if (
+						!isRateLimit ||
+						attempt === MAX_RETRIES
+					) {
+						throw err;
+					}
+
+					const delayMs =
+						BASE_DELAY_MS *
+						Math.pow(2, attempt);
+					await new Promise((resolve) =>
+						setTimeout(resolve, delayMs),
+					);
+				}
+			}
+			if (!batchResults) {
+				throw (
+					lastErr ||
+					new Error(
+						"Failed to fetch batch account infos",
+					)
+				);
+			}
 			allAccountInfos.push(...batchResults);
 		}
 
-		// Check which UTXOs are spent based on account existence
-		const spentStatuses: boolean[] = [];
+		// Check which uncached UTXOs are spent based on account existence, then cache.
 		let debugCount = 0;
-		for (let i = 0; i < utxos.length; i++) {
+		for (const i of uncachedIndices) {
 			const pda = utxoPDAMap.get(i)!;
 			const nullifier0Info =
 				allAccountInfos[pda.nullifier0Index];
 			const nullifier1Info =
 				allAccountInfos[pda.nullifier1Index];
 			const isSpent = !!(nullifier0Info || nullifier1Info);
-			spentStatuses.push(isSpent);
+			spentStatuses[i] = isSpent;
+			spentStatusCache.set(nullifierHexes[i], {
+				spent: isSpent,
+				checkedAt: now,
+			});
 
 			// Debug first 3 UTXOs
 			if (debugCount < 3) {
-				log(`[SDK DEBUG NULLIFIER] UTXO ${i}: nullifier0=${nullifier0Info ? 'EXISTS' : 'null'}, nullifier1=${nullifier1Info ? 'EXISTS' : 'null'}, isSpent=${isSpent}`);
+				log(
+					`[SDK DEBUG NULLIFIER] UTXO ${i}: nullifier0=${nullifier0Info ? "EXISTS" : "null"}, nullifier1=${nullifier1Info ? "EXISTS" : "null"}, isSpent=${isSpent}`,
+				);
 				debugCount++;
 			}
 		}
 
 		return spentStatuses;
-	} catch (error: any) {
-		error("Error in batch checking UTXOs:", error);
-		// Fail closed: if spent-check fails, treat as spent to prevent nullifier collisions/double-spend attempts.
-		return new Array(utxos.length).fill(true);
+		} catch (err: unknown) {
+			error("Error in batch checking UTXOs:", err);
+			// Fail closed: if spent-check fails, treat as spent to prevent nullifier collisions/double-spend attempts.
+			return new Array(utxos.length).fill(true);
 	}
 }
 
@@ -814,10 +976,14 @@ export async function isUtxoSpent(
 			}
 
 			return false;
-		} catch (onChainError: any) {
-			log(
-				`On-chain check failed, falling back to relayer: ${onChainError.message}`,
-			);
+			} catch (onChainError: unknown) {
+				log(
+					`On-chain check failed, falling back to relayer: ${
+						onChainError instanceof Error
+							? onChainError.message
+							: String(onChainError)
+					}`,
+				);
 
 			// Fallback to relayer API if on-chain check fails
 			const response = await axios.post(
@@ -838,15 +1004,17 @@ export async function isUtxoSpent(
 			// If response format is unexpected, assume unspent
 			return false;
 		}
-	} catch (error: any) {
-		error("Error checking if UTXO is spent:", error);
-		if (error.message?.includes("429")) {
-			error("code 429, retry..");
-			await new Promise((resolve) =>
-				setTimeout(resolve, 5000),
-			);
-			return await isUtxoSpent(connection, utxo);
-		}
+		} catch (err: unknown) {
+			error("Error checking if UTXO is spent:", err);
+			const errMessage =
+				err instanceof Error ? err.message : String(err);
+			if (errMessage.includes("429")) {
+				error("code 429, retry..");
+				await new Promise((resolve) =>
+					setTimeout(resolve, 5000),
+				);
+				return await isUtxoSpent(connection, utxo, relayerUrl);
+			}
 		// Default to unspent on error (was 'spent' before, but unspent is safer)
 		return false;
 	}
@@ -890,9 +1058,9 @@ async function decrypt_output(
 
 		// If we got here, decryption succeeded, so this UTXO belongs to the user
 		res.status = "decrypted";
-	} catch (error: any) {
-		// Silently skip - this UTXO doesn't belong to the user
-		// (Failed decryption is expected for UTXOs belonging to other users)
-	}
+		} catch (_error: unknown) {
+			// Silently skip - this UTXO doesn't belong to the user
+			// (Failed decryption is expected for UTXOs belonging to other users)
+		}
 	return res;
 }

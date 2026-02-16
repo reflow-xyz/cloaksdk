@@ -21,7 +21,7 @@ export class MerkleTree {
      */
     levels: number;
     capacity: number;
-    zeroElement;
+    zeroElement: string;
     _zeros: string[];
     _layers: string[][];
     _lightWasm: LightWasm;
@@ -101,7 +101,6 @@ export class MerkleTree {
         this._rebuild();
     }
 
-    // TODO: update does not work debug
     /**
      * Change an element in the tree
      * @param {number} index Index of element to change
@@ -160,7 +159,10 @@ export class MerkleTree {
      * @param comparator A function that checks leaf value equality
      * @returns {number} Index if element is found, otherwise -1
      */
-    indexOf(element: string, comparator: Function | null = null) {
+    indexOf(
+        element: string,
+        comparator: ((target: string, current: string) => boolean) | null = null,
+    ) {
         if (comparator) {
             return this._layers[0].findIndex((el: string) => comparator(element, el));
         } else {
@@ -181,7 +183,11 @@ export class MerkleTree {
      * Deserializing it back will not require to recompute any hashes
      * Elements are not converted to a plain type, this is responsibility of the caller
      */
-    serialize() {
+    serialize(): {
+        levels: number;
+        _zeros: string[];
+        _layers: string[][];
+    } {
         return {
             levels: this.levels,
             _zeros: this._zeros,
@@ -195,12 +201,22 @@ export class MerkleTree {
      * otherwise the tree state will be invalid
      *
      * @param data
-     * @param hashFunction
+     * @param lightWasm
      * @returns {MerkleTree}
      */
-    static deserialize(data: any, hashFunction: Function) {
-        const instance = Object.assign(Object.create(this.prototype), data);
-        instance._hash = hashFunction;
+    static deserialize(
+        data: {
+            levels: number;
+            _zeros: string[];
+            _layers: string[][];
+        },
+        lightWasm: LightWasm,
+    ): MerkleTree {
+        const instance = Object.assign(
+            Object.create(this.prototype),
+            data,
+        ) as MerkleTree;
+        instance._lightWasm = lightWasm;
         instance.capacity = 2 ** instance.levels;
         instance.zeroElement = instance._zeros[0];
         return instance;

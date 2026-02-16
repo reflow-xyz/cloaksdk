@@ -1,5 +1,30 @@
 import { error, log } from "./logger";
 
+function isBrowserRuntime(): boolean {
+	return (
+		typeof globalThis !== "undefined" &&
+		"window" in globalThis &&
+		typeof (globalThis as unknown as { window: unknown }).window !==
+			"undefined"
+	);
+}
+
+function withDefaultHeaders(options?: RequestInit): RequestInit | undefined {
+	const headers = new Headers(options?.headers ?? undefined);
+
+	// Some relayers/CDNs (e.g. Cloudflare) may serve different responses based on headers.
+	// `User-Agent` cannot be set in browsers, so only set it in Node runtimes.
+	if (!headers.has("accept")) {
+		headers.set("accept", "application/json, text/plain, */*");
+	}
+	if (!isBrowserRuntime() && !headers.has("user-agent")) {
+		// A browser-like UA prevents some bot protections from returning misleading 404s.
+		headers.set("user-agent", "Mozilla/5.0");
+	}
+
+	return options ? { ...options, headers } : { headers };
+}
+
 /**
  * Fetch with automatic retry and exponential backoff
  * Handles network failures, timeouts, and transient server errors (5xx)
@@ -11,11 +36,12 @@ export async function fetchWithRetry(
 	maxRetries: number = 3,
 	baseDelayMs: number = 500,
 ): Promise<Response> {
-	let lastError: any;
+	let lastError: unknown;
+	const preparedOptions = withDefaultHeaders(options);
 
 	for (let attempt = 0; attempt <= maxRetries; attempt++) {
 		try {
-			const response = await fetch(url, options);
+			const response = await fetch(url, preparedOptions);
 
 			// Success - return immediately
 			if (response.ok) {
@@ -46,7 +72,7 @@ export async function fetchWithRetry(
 			// Other status codes - return for caller to handle
 			return response;
 
-		} catch (err: any) {
+		} catch (err: unknown) {
 			// Network errors - retry with backoff
 			lastError = err;
 
@@ -57,7 +83,10 @@ export async function fetchWithRetry(
 
 			const delayMs = baseDelayMs * Math.pow(2, attempt);
 			error(`⚠️  Network error, retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries})...`);
-			log(`Error details:`, err.message);
+			log(
+				`Error details:`,
+				err instanceof Error ? err.message : String(err),
+			);
 
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 		}
@@ -79,10 +108,12 @@ export async function fetchJsonWithRetry<T>(
 
 	try {
 		return (await response.json()) as T;
-	} catch (err: any) {
+	} catch (err: unknown) {
 		error(`❌ Failed to parse JSON response from ${url}:`, err);
 		throw new Error(
-			`Invalid JSON response from ${url}: ${err.message}`,
+			`Invalid JSON response from ${url}: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
 		);
 	}
 }

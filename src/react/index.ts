@@ -144,7 +144,6 @@ export function useCloakSDK(options: UseCloakSDKOptions): UseCloakSDKReturn {
     try {
       const config: CloakSDKConfig = {
         connection,
-        signer,
         relayerUrl,
         altAddress,
         programId,
@@ -153,6 +152,7 @@ export function useCloakSDK(options: UseCloakSDKOptions): UseCloakSDKReturn {
       };
 
       const newSdk = new CloakSDK(config);
+      newSdk.setSigner(signer);
       await newSdk.initialize();
 
       setSdk(newSdk);
@@ -244,7 +244,9 @@ export interface UseCloakWalletReturn {
  *
  *   const createSDK = () => {
  *     if (!signer) return null;
- *     return new CloakSDK({ connection, signer, relayerUrl: '...' });
+ *     const sdk = new CloakSDK({ connection, relayerUrl: '...' });
+ *     sdk.setSigner(signer);
+ *     return sdk;
  *   };
  * }
  * ```

@@ -26,7 +26,7 @@ export class Keypair {
     const rawDecimal = BigInt(privkeyHex);
     this.privkey = new BN((rawDecimal % BigInt(FIELD_SIZE.toString())).toString());
     this.lightWasm = lightWasm;
-    // TODO: lazily compute pubkey
+    // Keep eager derivation for deterministic behavior and simpler call sites.
     this.pubkey = new BN(this.lightWasm.poseidonHashString([this.privkey.toString()]));
   }
 

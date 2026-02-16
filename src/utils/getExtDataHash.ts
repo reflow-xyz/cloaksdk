@@ -131,12 +131,17 @@ export function getExtDataHash(
 	const extAmount = new BN(extData.extAmount.toString());
 	const fee = new BN(extData.fee.toString());
 
+	const toEncryptedBytes = (value: string | Uint8Array): Uint8Array =>
+		typeof value === "string"
+			? new Uint8Array(Buffer.from(value))
+			: value;
+
 	// Handle encrypted outputs - they might not be present in Account Data Separation approach
 	const encryptedOutput1 = extData.encryptedOutput1
-		? new Uint8Array(Buffer.from(extData.encryptedOutput1 as any))
+		? toEncryptedBytes(extData.encryptedOutput1)
 		: new Uint8Array(0); // Empty buffer if not provided
 	const encryptedOutput2 = extData.encryptedOutput2
-		? new Uint8Array(Buffer.from(extData.encryptedOutput2 as any))
+		? toEncryptedBytes(extData.encryptedOutput2)
 		: new Uint8Array(0); // Empty buffer if not provided
 
 	// Manual serialization using custom BufferWriter

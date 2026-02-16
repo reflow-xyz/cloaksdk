@@ -83,13 +83,13 @@ export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes];
  */
 export class CloakError extends Error {
   public readonly code: ErrorCode;
-  public readonly details?: Record<string, any>;
+  public readonly details?: Record<string, unknown>;
   public readonly originalError?: Error;
 
   constructor(
     code: ErrorCode,
     message: string,
-    details?: Record<string, any>,
+    details?: Record<string, unknown>,
     originalError?: Error
   ) {
     super(message);
@@ -130,7 +130,7 @@ export class ValidationError extends CloakError {
   constructor(
     code: ErrorCode,
     message: string,
-    details?: Record<string, any>,
+    details?: Record<string, unknown>,
     originalError?: Error
   ) {
     super(code, message, details, originalError);
@@ -148,7 +148,7 @@ export class NetworkError extends CloakError {
   constructor(
     code: ErrorCode,
     message: string,
-    details?: Record<string, any> & { statusCode?: number; endpoint?: string },
+    details?: Record<string, unknown> & { statusCode?: number; endpoint?: string },
     originalError?: Error
   ) {
     super(code, message, details, originalError);
@@ -168,7 +168,7 @@ export class TransactionError extends CloakError {
   constructor(
     code: ErrorCode,
     message: string,
-    details?: Record<string, any> & { signature?: string; transactionLogs?: string[] },
+    details?: Record<string, unknown> & { signature?: string; transactionLogs?: string[] },
     originalError?: Error
   ) {
     super(code, message, details, originalError);
@@ -185,7 +185,7 @@ export class EncryptionError extends CloakError {
   constructor(
     code: ErrorCode,
     message: string,
-    details?: Record<string, any>,
+    details?: Record<string, unknown>,
     originalError?: Error
   ) {
     super(code, message, details, originalError);
@@ -200,7 +200,7 @@ export class ConfigurationError extends CloakError {
   constructor(
     code: ErrorCode,
     message: string,
-    details?: Record<string, any>,
+    details?: Record<string, unknown>,
     originalError?: Error
   ) {
     super(code, message, details, originalError);
@@ -215,7 +215,7 @@ export class ProofError extends CloakError {
   constructor(
     code: ErrorCode,
     message: string,
-    details?: Record<string, any>,
+    details?: Record<string, unknown>,
     originalError?: Error
   ) {
     super(code, message, details, originalError);
@@ -226,14 +226,14 @@ export class ProofError extends CloakError {
 /**
  * Helper function to check if an error is a CloakError
  */
-export function isCloakError(error: any): error is CloakError {
+export function isCloakError(error: unknown): error is CloakError {
   return error instanceof CloakError;
 }
 
 /**
  * Helper function to check if an error has a specific code
  */
-export function hasErrorCode(error: any, code: ErrorCode): boolean {
+export function hasErrorCode(error: unknown, code: ErrorCode): boolean {
   return isCloakError(error) && error.code === code;
 }
 

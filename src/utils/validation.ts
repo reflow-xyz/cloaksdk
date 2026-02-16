@@ -1,6 +1,7 @@
 import { PublicKey, Connection } from "@solana/web3.js";
 import BN from "bn.js";
-import { error as error, log } from "./logger";
+import { error, log } from "./logger";
+import { ErrorCodes, ValidationError } from "../errors";
 
 /**
  * Validation utilities for SDK operations
@@ -18,20 +19,6 @@ const MAX_LAMPORTS = new BN("18446744073709551615"); // u64 max
 const MIN_RENT_EXEMPT_BALANCE = 890880; // Minimum SOL for rent exemption
 
 /**
- * Validation error class with detailed context
- */
-export class ValidationError extends Error {
-	constructor(
-		message: string,
-		public readonly code: string,
-		public readonly details?: any,
-	) {
-		super(message);
-		this.name = "ValidationError";
-	}
-}
-
-/**
  * Validate deposit amount
  */
 export function validateDepositAmount(
@@ -42,8 +29,8 @@ export function validateDepositAmount(
 	// Check if amount is positive
 	if (amountInSol <= 0) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Deposit amount must be greater than zero",
-			"INVALID_AMOUNT",
 			{ amount: amountInSol },
 		);
 	}
@@ -51,8 +38,8 @@ export function validateDepositAmount(
 	// Check if amount is a valid number
 	if (!Number.isFinite(amountInSol)) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Deposit amount must be a valid number",
-			"INVALID_AMOUNT",
 			{ amount: amountInSol },
 		);
 	}
@@ -62,8 +49,8 @@ export function validateDepositAmount(
 	// Check for overflow
 	if (amountInLamports > Number.MAX_SAFE_INTEGER) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Deposit amount is too large",
-			"AMOUNT_OVERFLOW",
 			{
 				amount: amountInSol,
 				maxSol: Number.MAX_SAFE_INTEGER / 1e9,
@@ -74,8 +61,8 @@ export function validateDepositAmount(
 	const amountBN = new BN(amountInLamports);
 	if (amountBN.gt(MAX_LAMPORTS)) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Deposit amount exceeds maximum allowed value",
-			"AMOUNT_OVERFLOW",
 			{
 				amount: amountInSol,
 				maxLamports: MAX_LAMPORTS.toString(),
@@ -87,12 +74,12 @@ export function validateDepositAmount(
 	const totalRequired = amountInLamports + feeAmount;
 	if (userBalance < totalRequired) {
 		throw new ValidationError(
+			ErrorCodes.INSUFFICIENT_BALANCE,
 			`Insufficient balance. Required: ${
 				totalRequired / 1e9
 			} SOL (${amountInSol} + ${
 				feeAmount / 1e9
 			} fee), Available: ${userBalance / 1e9} SOL`,
-			"INSUFFICIENT_BALANCE",
 			{
 				required: totalRequired,
 				available: userBalance,
@@ -121,13 +108,13 @@ export function validateDepositAmount(
 export function validateWithdrawalAmount(
 	amountInSol: number,
 	availableBalance: BN,
-	feeAmount: number,
+	feeRatePercent: number,
 ): { isPartial: boolean; adjustedAmount: number } {
 	// Check if amount is positive
 	if (amountInSol <= 0) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Withdrawal amount must be greater than zero",
-			"INVALID_AMOUNT",
 			{ amount: amountInSol },
 		);
 	}
@@ -135,43 +122,74 @@ export function validateWithdrawalAmount(
 	// Check if amount is a valid number
 	if (!Number.isFinite(amountInSol)) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Withdrawal amount must be a valid number",
-			"INVALID_AMOUNT",
 			{ amount: amountInSol },
 		);
 	}
+
+	const feeRateBps = Math.max(0, Math.round(feeRatePercent * 100));
+	const feeDenom = 10_000;
+
+	const computeMaxWithdrawableLamports = (): BN => {
+		// Solve gross + floor(gross * bps / 10_000) <= available
+		if (feeRateBps === 0) {
+			return availableBalance;
+		}
+		let gross = availableBalance
+			.muln(feeDenom)
+			.divn(feeDenom + feeRateBps);
+		// Adjust for floor rounding in the fee term.
+		for (let i = 0; i < 5; i++) {
+			const fee = gross.muln(feeRateBps).divn(feeDenom);
+			if (gross.add(fee).lte(availableBalance)) {
+				return gross;
+			}
+			gross = gross.subn(1);
+		}
+		return gross;
+	};
 
 	const amountInLamports = Math.floor(amountInSol * 1e9);
 
 	// Check for overflow
 	if (amountInLamports > Number.MAX_SAFE_INTEGER) {
+		const maxWithdrawableLamports = computeMaxWithdrawableLamports();
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Withdrawal amount is too large",
-			"AMOUNT_OVERFLOW",
-			{ amount: amountInSol },
+			{
+				amount: amountInSol,
+				availableLamports: availableBalance.toString(),
+				maxWithdrawableLamports: maxWithdrawableLamports.toString(),
+			},
 		);
 	}
 
 	const requestedBN = new BN(amountInLamports);
-	const feeBN = new BN(feeAmount);
+	const feeLamports = Math.floor(amountInLamports * (feeRatePercent / 100));
+	const feeBN = new BN(feeLamports);
 	const totalRequiredBN = requestedBN.add(feeBN);
 
 	// Check if sufficient balance
 	if (availableBalance.lt(totalRequiredBN)) {
+		const maxWithdrawableLamports = computeMaxWithdrawableLamports();
 		throw new ValidationError(
+			ErrorCodes.INSUFFICIENT_BALANCE,
 			`Insufficient balance for withdrawal. Required: ${
 				totalRequiredBN.toNumber() / 1e9
 			} SOL (${amountInSol} + ${
-				feeAmount / 1e9
+				feeLamports / 1e9
 			} fee), Available: ${
 				availableBalance.toNumber() / 1e9
 			} SOL`,
-			"INSUFFICIENT_BALANCE",
 			{
 				required: totalRequiredBN.toNumber(),
 				available: availableBalance.toNumber(),
 				amount: amountInLamports,
-				fee: feeAmount,
+				fee: feeLamports,
+				availableLamports: availableBalance.toString(),
+				maxWithdrawableLamports: maxWithdrawableLamports.toString(),
 			},
 		);
 	}
@@ -182,19 +200,19 @@ export function validateWithdrawalAmount(
 /**
  * Validate SPL token amount
  */
-export function validateSplAmount(amount: number, decimals: number = 9): void {
+export function validateSplAmount(amount: number): void {
 	if (amount <= 0) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"SPL token amount must be greater than zero",
-			"INVALID_AMOUNT",
 			{ amount },
 		);
 	}
 
 	if (!Number.isFinite(amount) || !Number.isInteger(amount)) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"SPL token amount must be a valid integer (in base units)",
-			"INVALID_AMOUNT",
 			{ amount },
 		);
 	}
@@ -202,8 +220,8 @@ export function validateSplAmount(amount: number, decimals: number = 9): void {
 	// Check for overflow
 	if (amount > Number.MAX_SAFE_INTEGER) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"SPL token amount is too large",
-			"AMOUNT_OVERFLOW",
 			{ amount },
 		);
 	}
@@ -211,8 +229,8 @@ export function validateSplAmount(amount: number, decimals: number = 9): void {
 	const amountBN = new BN(amount);
 	if (amountBN.gt(MAX_LAMPORTS)) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"SPL token amount exceeds maximum allowed value",
-			"AMOUNT_OVERFLOW",
 			{ amount, maxValue: MAX_LAMPORTS.toString() },
 		);
 	}
@@ -229,8 +247,8 @@ export function validatePublicKey(
 		return typeof key === "string" ? new PublicKey(key) : key;
 	} catch (error) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_ADDRESS,
 			`Invalid ${fieldName}: ${key}`,
-			"INVALID_PUBLIC_KEY",
 			{ fieldName, value: key },
 		);
 	}
@@ -336,8 +354,8 @@ export function validateTransactionSize(params: {
 
 	if (estimatedSize > MAX_TRANSACTION_SIZE) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_STATE,
 			`Transaction size (${estimatedSize} bytes) would exceed Solana limit (${MAX_TRANSACTION_SIZE} bytes). Try reducing the number of inputs.`,
-			"TRANSACTION_TOO_LARGE",
 			{
 				estimatedSize,
 				maxSize: MAX_TRANSACTION_SIZE,
@@ -361,16 +379,16 @@ export function validateDelayMinutes(delayMinutes?: number): void {
 
 	if (delayMinutes < 0) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Delay minutes cannot be negative",
-			"INVALID_DELAY",
 			{ delayMinutes },
 		);
 	}
 
 	if (!Number.isInteger(delayMinutes)) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			"Delay minutes must be an integer",
-			"INVALID_DELAY",
 			{ delayMinutes },
 		);
 	}
@@ -378,8 +396,8 @@ export function validateDelayMinutes(delayMinutes?: number): void {
 	const MAX_DELAY_MINUTES = 10080; // 7 days
 	if (delayMinutes > MAX_DELAY_MINUTES) {
 		throw new ValidationError(
+			ErrorCodes.INVALID_AMOUNT,
 			`Delay cannot exceed ${MAX_DELAY_MINUTES} minutes (7 days)`,
-			"INVALID_DELAY",
 			{ delayMinutes, maxDelay: MAX_DELAY_MINUTES },
 		);
 	}
@@ -388,13 +406,18 @@ export function validateDelayMinutes(delayMinutes?: number): void {
 /**
  * Parse on-chain error to detect specific failure reasons
  */
-export function parseTransactionError(error: any): {
+export function parseTransactionError(error: unknown): {
 	isRootMismatch: boolean;
 	isInsufficientFunds: boolean;
 	isNullifierAlreadyUsed: boolean;
 	message: string;
 } {
-	const errorString = error?.message || error?.toString() || "";
+	const errorString =
+		typeof error === "object" &&
+		error !== null &&
+		"message" in error
+			? String((error as { message?: unknown }).message ?? "")
+			: String(error ?? "");
 	const errorLower = errorString.toLowerCase();
 
 	return {
