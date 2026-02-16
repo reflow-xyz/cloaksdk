@@ -219,6 +219,69 @@ export interface BatchBalanceEntry {
 }
 
 /**
+ * Options for estimating max transferable SOL from private balance.
+ */
+export interface MaxTransferableOptions {
+  /**
+   * Number of withdrawal transactions you plan to execute.
+   * Each withdrawal can incur fixed overhead (e.g. nullifier account rent).
+   * Default: 1
+   */
+  numberOfWithdrawals?: number;
+  /**
+   * Withdrawal fee rate in percent.
+   * Default: protocol withdraw fee rate (currently 0.3).
+   */
+  withdrawFeeRatePercent?: number;
+  /**
+   * Fixed per-withdrawal cost (in SOL) debited from private balance.
+   * Default is based on two nullifier accounts: 2 * 0.00095352 SOL.
+   */
+  fixedCostPerWithdrawalSol?: number;
+  /**
+   * Force fresh UTXO fetch for source balance.
+   * Default: true.
+   */
+  forceRefresh?: boolean;
+  /** Optional signer override for this operation */
+  signer?: TransactionSigner | Keypair;
+  /** Optional signed UTXO wallet identity override */
+  utxoWalletSigned?: Signed;
+}
+
+/**
+ * Result for max transferable SOL estimation.
+ */
+export interface MaxTransferableResult {
+  /** Max transferable recipient amount (SOL), after variable and fixed fees */
+  maxTransferableAmount: number;
+  /** Max transferable recipient amount in lamports (exact) */
+  maxTransferableLamports: string;
+  /** Available private balance (SOL) at time of estimation */
+  availableAmount: number;
+  /** Available private balance in lamports (exact) */
+  availableLamports: string;
+  /** Number of withdrawals used in the estimate */
+  numberOfWithdrawals: number;
+  /** Variable withdrawal fee rate percent used in estimate */
+  withdrawFeeRatePercent: number;
+  /** Fixed per-withdrawal cost used in estimate (SOL) */
+  fixedCostPerWithdrawalSol: number;
+  /** Total fixed costs across all withdrawals (SOL) */
+  totalFixedCostSol: number;
+  /** Total fixed costs across all withdrawals in lamports (exact) */
+  totalFixedCostLamports: string;
+  /** Variable fee at max transferable amount (SOL) */
+  estimatedVariableFeeSol: number;
+  /** Variable fee at max transferable amount in lamports (exact) */
+  estimatedVariableFeeLamports: string;
+  /** Total estimated fees at max transferable amount (SOL) */
+  estimatedTotalFeeSol: number;
+  /** Total estimated fees at max transferable amount in lamports (exact) */
+  estimatedTotalFeeLamports: string;
+}
+
+/**
  * Per-transfer leg result
  */
 export interface TransferLegResult {
@@ -283,8 +346,26 @@ export interface TransferBackEntry {
   cancelWarnings?: string[];
   /** SOL balance (lamports) before transferBack */
   balanceLamports: string;
+  /** Max transferable amount after fees (SOL) */
+  maxTransferableAmount?: number;
+  /** Max transferable amount after fees (lamports) */
+  maxTransferableLamports?: string;
   /** Withdraw result for transferring funds back */
   withdrawResult?: WithdrawResult;
+}
+
+/**
+ * Options for transferBack operation
+ */
+export interface TransferBackOptions {
+  /**
+   * Automatically deposit successfully transferred-back SOL into the Cloak pool
+   * of the SDK signer after withdrawals complete.
+   * Default: false
+   */
+  redepositToPool?: boolean;
+  /** Optional callback for status updates */
+  onStatus?: (status: string) => void;
 }
 
 /**
@@ -295,6 +376,10 @@ export interface TransferBackResult {
   success: boolean;
   /** Per-wallet transferBack details */
   entries: TransferBackEntry[];
+  /** Total SOL successfully transferred back to signer wallet (before optional redeposit) */
+  transferredBackAmount?: number;
+  /** Result of optional redeposit into Cloak pool */
+  redepositResult?: DepositResult;
   /** Error message if operation fails early */
   error?: string;
 }

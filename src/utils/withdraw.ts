@@ -49,6 +49,7 @@ import { fetchWithRetry } from "./fetchWithRetry";
 import { requireHasher } from "./hasher-guard";
 import { deriveNullifierPdas } from "./nullifier-pdas";
 import { postRelayerJson } from "./relayer-client";
+import { isUserRejectedError } from "./wallet-errors";
 
 import { planBatchWithdrawals } from "./batch-withdraw";
 // relayer API endpoint
@@ -443,14 +444,41 @@ export async function withdraw(
 	// Validate delay minutes if provided
 	validateDelayMinutes(delayMinutes);
 
-	let amount_in_lamports = amount_in_sol * LAMPORTS_PER_SOL;
-
-	let fee_amount_in_lamports = Math.floor(
-		amount_in_lamports * (WITHDRAW_FEE_RATE / 100),
+	// `amount_in_sol` is the recipient amount. The protocol charges `fee_amount_in_lamports`
+	// in addition to `amount_in_lamports`, so total debited from UTXOs is amount + fee.
+	let amount_in_lamports = Math.floor(
+		amount_in_sol * LAMPORTS_PER_SOL,
 	);
 
-	amount_in_lamports -= fee_amount_in_lamports;
+	const fee_amount_in_lamports = Math.floor(
+		amount_in_lamports * (WITHDRAW_FEE_RATE / 100),
+	);
 	let isPartial = false;
+
+	// If recipient account does not exist yet, the withdrawn amount must be at least
+	// rent-exempt minimum for a system account (0-byte data account) so account creation succeeds.
+	const recipientAccountInfo = await connection.getAccountInfo(
+		recipient_address,
+	);
+	if (!recipientAccountInfo) {
+		const minRecipientLamports =
+			await connection.getMinimumBalanceForRentExemption(0);
+		if (amount_in_lamports < minRecipientLamports) {
+			throw new ValidationError(
+				ErrorCodes.INVALID_AMOUNT,
+				`Recipient wallet is new/unfunded. Minimum withdrawal to initialize it is ${minRecipientLamports / LAMPORTS_PER_SOL} SOL, but requested ${amount_in_lamports / LAMPORTS_PER_SOL} SOL.`,
+				{
+					recipient: recipient_address.toBase58(),
+					minRecipientLamports,
+					minRecipientSol:
+						minRecipientLamports / LAMPORTS_PER_SOL,
+					requestedLamports: amount_in_lamports,
+					requestedSol:
+						amount_in_lamports / LAMPORTS_PER_SOL,
+				},
+			);
+		}
+	}
 
 	// Validate ALT address is provided
 	if (!altAddress) {
@@ -523,9 +551,9 @@ export async function withdraw(
 			);
 			unspentUtxos = providedUtxos;
 		} else {
-			// Fetch existing UTXOs for this UTXO wallet (may be different from transaction wallet)
-			// Force refresh on retries to avoid stale cache while relayer indexing catches up.
-			const forceRefreshUtxos = retryCount > 0;
+			// Fetch existing UTXOs for this UTXO wallet (may be different from transaction wallet).
+			// Default to forceRefresh=true to reduce "nullifier already used" races from stale caches.
+			const forceRefreshUtxos = true;
 			const allUtxos = await getMyUtxos(
 				utxoWalletSigned || signed, // Use UTXO wallet if provided, otherwise transaction wallet
 				connection,
@@ -1131,7 +1159,7 @@ export async function withdraw(
 			// This ensures the change UTXO is indexed before we return
 			try {
 				const expectedNextIndex = currentNextIndex + 2;
-				const maxPollingAttempts = 10;
+				const maxPollingAttempts = 100;
 				const pollingIntervalMs = 1000; // 1 second between attempts
 
 				let attempts = 0;
@@ -1225,6 +1253,12 @@ export async function withdraw(
 		// Parse error to detect specific failure reasons
 		const errorInfo = parseTransactionError(err);
 
+		// Never retry if the user rejected the wallet prompt (common code=4001).
+		if (isUserRejectedError(err)) {
+			error(" Withdrawal aborted: user rejected wallet request.");
+			throw err;
+		}
+
 		if (errorInfo.isRootMismatch) {
 			error(
 				" Root mismatch detected - tree was updated during transaction",
@@ -1254,9 +1288,9 @@ export async function withdraw(
 		}
 
 		if (errorInfo.isNullifierAlreadyUsed) {
-			error(" UTXO already spent (nullifier already used)");
 			if (retryCount < maxRetries) {
-				error(
+				warn(" UTXO already spent (nullifier already used)");
+				warn(
 					` Retrying withdrawal with fresh input selection to avoid stale/nullifier-colliding UTXOs (attempt ${retryCount + 1}/${maxRetries})...`,
 				);
 
@@ -1345,6 +1379,7 @@ export async function withdraw(
 						altAddress,
 					);
 			}
+			error(" UTXO already spent (nullifier already used)");
 			throw new TransactionError(
 				ErrorCodes.NULLIFIER_ALREADY_USED,
 				"One or more UTXOs have already been spent. Please refresh your balance.",
@@ -1353,6 +1388,23 @@ export async function withdraw(
 		}
 
 		if (errorInfo.isInsufficientFunds) {
+			if (errorInfo.isInsufficientRent) {
+				const minRecipientLamports =
+					await connection
+						.getMinimumBalanceForRentExemption(0)
+						.catch(() => 0);
+				throw new ValidationError(
+					ErrorCodes.INVALID_AMOUNT,
+					`Recipient wallet appears unfunded and requires rent-exempt minimum. Try withdrawing at least ${minRecipientLamports / LAMPORTS_PER_SOL} SOL to a fresh wallet first.`,
+					{
+						minRecipientLamports,
+						minRecipientSol:
+							minRecipientLamports /
+							LAMPORTS_PER_SOL,
+						error: errorInfo.message,
+					},
+				);
+			}
 			error(" Insufficient funds for transaction");
 			throw new ValidationError(
 				ErrorCodes.INSUFFICIENT_BALANCE,

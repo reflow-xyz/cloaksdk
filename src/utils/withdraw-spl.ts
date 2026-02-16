@@ -44,6 +44,7 @@ import { getSplMintId, mintIdMatches } from "./spl-mint-id";
 import { requireHasher } from "./hasher-guard";
 import { deriveNullifierPairPdas } from "./nullifier-pdas";
 import { postRelayerJson } from "./relayer-client";
+import { isUserRejectedError } from "./wallet-errors";
 
 /**
  * Query remote tree state from relayer API
@@ -815,7 +816,7 @@ export async function withdrawSpl(
 			// This ensures the change UTXO is indexed before we return
 			try {
 				const expectedNextIndex = currentNextIndex + 2;
-				const maxPollingAttempts = 10;
+				const maxPollingAttempts = 100;
 				const pollingIntervalMs = 1000; // 1 second between attempts
 
 				let attempts = 0;
@@ -891,6 +892,12 @@ export async function withdrawSpl(
 		} catch (err: unknown) {
 		// Parse error to detect specific failure reasons
 		const errorInfo = parseTransactionError(err);
+
+		// Never retry if the user rejected the wallet prompt (common code=4001).
+		if (isUserRejectedError(err)) {
+			error(" SPL withdrawal aborted: user rejected wallet request.");
+			throw err;
+		}
 
 		// Special handling for NO_UNSPENT_UTXOS - add delay for relayer indexing
 		const isNoUtxosError =

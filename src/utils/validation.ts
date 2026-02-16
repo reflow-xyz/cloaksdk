@@ -409,6 +409,7 @@ export function validateDelayMinutes(delayMinutes?: number): void {
 export function parseTransactionError(error: unknown): {
 	isRootMismatch: boolean;
 	isInsufficientFunds: boolean;
+	isInsufficientRent: boolean;
 	isNullifierAlreadyUsed: boolean;
 	message: string;
 } {
@@ -429,6 +430,10 @@ export function parseTransactionError(error: unknown): {
 			errorLower.includes("insufficient funds") ||
 			errorLower.includes("insufficient lamports") ||
 			errorLower.includes("account not found"),
+		isInsufficientRent:
+			errorLower.includes("insufficient funds for rent") ||
+			(errorLower.includes("rent") &&
+				errorLower.includes("insufficient funds")),
 		isNullifierAlreadyUsed:
 			errorLower.includes("nullifier") &&
 			(errorLower.includes("already") ||

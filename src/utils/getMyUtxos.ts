@@ -80,9 +80,7 @@ export async function refreshUtxos(
 	);
 }
 
-let getMyUtxosPromise: Promise<FetchedUtxoBatch> | null = null;
-let roundStartIndex = 0;
-let decryptionTaskFinished = 0;
+const getMyUtxosPromises = new Map<string, Promise<FetchedUtxoBatch>>();
 
 // Cache spent-status checks briefly to reduce repeated RPC pressure during retries.
 const SPENT_STATUS_CACHE_TTL_MS = 30_000;
@@ -90,6 +88,10 @@ const spentStatusCache = new Map<
 	string,
 	{ spent: boolean; checkedAt: number }
 >();
+
+function getInFlightFetchKey(signed: Signed, relayerUrl: string): string {
+	return `${relayerUrl}|${signed.publicKey.toBase58()}`;
+}
 
 /**
  * Decrypt cached encrypted outputs for a specific wallet
@@ -395,12 +397,7 @@ export async function getMyUtxos(
 		statusCallback?.(`(loading utxos...)`);
 		let valid_utxos: Utxo[] = [];
 		let all_encrypted_outputs: string[] = [];
-		try {
-			// Always start from 0 to ensure complete fresh scan
-			roundStartIndex = 0;
-			// Reset the decryption counter
-			decryptionTaskFinished = 0;
-			const seenEncryptedOutputs = new Set<string>();
+		const seenEncryptedOutputs = new Set<string>();
 
 			// OPTIMIZATION: Fetch all batches in parallel first
 			const treeState = await queryRemoteTreeState();
@@ -464,11 +461,12 @@ export async function getMyUtxos(
 
 				// Batch check all UTXOs for spent status
 				const spentStatuses =
-					await batchCheckUtxosSpent(
-						connection,
-						nonZeroUtxos.map(
+						await batchCheckUtxosSpent(
+							connection,
+							nonZeroUtxos.map(
 							([_, utxo]) => utxo,
 						),
+						{ bypassCache: forceRefresh },
 					);
 
 				log(
@@ -503,9 +501,6 @@ export async function getMyUtxos(
 				}
 				await sleep(100);
 			}
-		} finally {
-			getMyUtxosPromise = null;
-		}
 		statusCallback?.(
 			`Processing ${valid_utxos.length} transactions...`,
 		);
@@ -516,18 +511,22 @@ export async function getMyUtxos(
 		};
 	};
 
-	// If there's already a promise running, wait for it.
-	// This prevents duplicate relayer scans for concurrent requests.
-	if (getMyUtxosPromise) {
-		const result = await getMyUtxosPromise;
+	const inFlightKey = getInFlightFetchKey(signed, relayerUrl);
+
+	// If there's already a promise running for this wallet+relayer, wait for it.
+	// This prevents duplicate relayer scans while avoiding cross-wallet data races.
+	const inFlightPromise = getMyUtxosPromises.get(inFlightKey);
+	if (inFlightPromise) {
+		const result = await inFlightPromise;
 		return result.utxos;
 	}
 
 	// Create and store new promise
-	getMyUtxosPromise = loadUtxos(setStatus);
+	const loadPromise = loadUtxos(setStatus);
+	getMyUtxosPromises.set(inFlightKey, loadPromise);
 
 	try {
-		const result = await getMyUtxosPromise;
+		const result = await loadPromise;
 
 		// Populate encrypted output cache after successful fetch
 		const treeState = await queryRemoteTreeState();
@@ -545,8 +544,8 @@ export async function getMyUtxos(
 
 		return result.utxos;
 	} finally {
-		// Clear the promise after completion so next call creates a new one
-		getMyUtxosPromise = null;
+		// Clear the in-flight promise after completion so next call creates a new one.
+		getMyUtxosPromises.delete(inFlightKey);
 	}
 }
 
@@ -594,7 +593,7 @@ async function fetchUserUtxos(
 		let encryptedOutputs: string[] = [];
 		let response: AxiosResponse<unknown>;
 		let hasMore = false;
-		let responseTotal = roundStartIndex;
+		let responseTotal = 0;
 		try {
 			response = await axios.get(url);
 
@@ -645,7 +644,7 @@ async function fetchUserUtxos(
 
 		const decryptionTaskTotal = Math.max(
 			encryptedOutputs.length,
-			responseTotal - roundStartIndex,
+			responseTotal,
 		);
 
 		// Process encrypted outputs in parallel batches - only fresh from API
@@ -663,9 +662,9 @@ async function fetchUserUtxos(
 			);
 			setStatus?.(
 				`(decrypting utxos: ${
-					decryptionTaskFinished + 1
+					i + 1
 				}-${Math.min(
-					decryptionTaskFinished + batch.length,
+					i + batch.length,
 					decryptionTaskTotal,
 				)}/${decryptionTaskTotal}...)`,
 			);
@@ -685,7 +684,6 @@ async function fetchUserUtxos(
 
 			// Process results
 			batchResults.forEach((dres, index) => {
-				decryptionTaskFinished++;
 				if (dres.status == "decrypted" && dres.utxo) {
 					dres.utxo.index =
 						startIndex + i + index;
@@ -724,6 +722,7 @@ async function fetchUserUtxos(
 async function batchCheckUtxosSpent(
 	connection: Connection,
 	utxos: Utxo[],
+	options?: { bypassCache?: boolean },
 ): Promise<boolean[]> {
 	if (utxos.length === 0) return [];
 
@@ -735,6 +734,7 @@ async function batchCheckUtxosSpent(
 			false,
 		);
 		const uncachedIndices: number[] = [];
+		const bypassCache = options?.bypassCache === true;
 
 		for (let i = 0; i < utxos.length; i++) {
 			const utxo = utxos[i];
@@ -745,6 +745,11 @@ async function batchCheckUtxosSpent(
 			const nullifierHex =
 				Buffer.from(nullifierBytes).toString("hex");
 			nullifierHexes.push(nullifierHex);
+
+			if (bypassCache) {
+				uncachedIndices.push(i);
+				continue;
+			}
 
 			const cached = spentStatusCache.get(nullifierHex);
 			if (
@@ -793,10 +798,6 @@ async function batchCheckUtxosSpent(
 					],
 					PROGRAM_ID,
 				);
-
-			log(
-				`UTXO ${i} nullifier PDAs: nullifier0=${nullifier0PDA.toString()}, nullifier1=${nullifier1PDA.toString()}`,
-			);
 
 			const nullifier0Index = allPDAs.length;
 			allPDAs.push(nullifier0PDA);

@@ -41,6 +41,7 @@ import { deriveNullifierPdas } from "./nullifier-pdas";
 import { parseProofToBytesArray, parseToBytesArray, prove } from "./prover";
 import { postRelayerJson } from "./relayer-client";
 import { requireHasher } from "./hasher-guard";
+import { isUserRejectedError } from "./wallet-errors";
 // Query relayer tx preparation state in one call.
 async function queryTxPrepareState(relayerUrl: string): Promise<{
 	root: string;
@@ -918,7 +919,7 @@ export async function deposit(
 		// Poll until tree state matches expected value or timeout
 		try {
 			const expectedNextIndex = currentNextIndex + 2;
-			const maxPollingAttempts = 10;
+			const maxPollingAttempts = 100;
 			const pollingIntervalMs = 1000; // 1 second between attempts
 
 			let attempts = 0;
@@ -987,6 +988,12 @@ export async function deposit(
 		}
 		// Parse error to detect specific failure reasons
 		const errorInfo = parseTransactionError(err);
+
+		// Never retry if the user rejected the wallet prompt (common code=4001).
+		if (isUserRejectedError(err)) {
+			logError("Deposit aborted: user rejected wallet request.");
+			throw err;
+		}
 
 		if (errorInfo.isRootMismatch) {
 			logError("Root mismatch detected. Merkle tree was updated during transaction.");

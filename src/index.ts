@@ -55,8 +55,11 @@ export type {
   UtxoBalance,
   TransferOptions,
   TransferResult,
+  TransferBackOptions,
   TransferBackResult,
   BatchBalanceEntry,
+  MaxTransferableOptions,
+  MaxTransferableResult,
 } from './types';
 
 // Export utility functions for advanced usage

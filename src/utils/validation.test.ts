@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import BN from "bn.js";
-import { validateWithdrawalAmount } from "./validation";
+import { parseTransactionError, validateWithdrawalAmount } from "./validation";
 import { ErrorCodes, ValidationError } from "../errors";
 
 describe("validateWithdrawalAmount", () => {
@@ -45,3 +45,12 @@ describe("validateWithdrawalAmount", () => {
 	});
 });
 
+describe("parseTransactionError", () => {
+	it("detects insufficient rent simulation errors", () => {
+		const parsed = parseTransactionError(
+			"Transaction results in an account (3) with insufficient funds for rent.",
+		);
+		expect(parsed.isInsufficientFunds).toBe(true);
+		expect(parsed.isInsufficientRent).toBe(true);
+	});
+});

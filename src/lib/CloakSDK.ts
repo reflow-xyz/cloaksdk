@@ -31,16 +31,27 @@ import type {
 	UtxoBalance,
 	TransferOptions,
 	TransferResult,
+	TransferBackOptions,
 	TransferBackResult,
 	BatchBalanceEntry,
+	MaxTransferableOptions,
+	MaxTransferableResult,
 	LightWasm,
 } from "../types";
 import { getMyUtxos, clearUtxoCache, refreshUtxos } from "../utils/getMyUtxos";
 import { planBatchDeposits, planBatchSplDeposits } from "../utils/batch-deposit";
 import { ErrorCodes, ConfigurationError, isCloakError } from "../errors";
 import { fetchWithRetry } from "../utils/fetchWithRetry";
-import { CIRCUIT_PATH } from "../utils/constants";
+import {
+	CIRCUIT_PATH,
+	WITHDRAW_FEE_RATE,
+} from "../utils/constants";
 import { mintIdMatches } from "../utils/spl-mint-id";
+import {
+	DEFAULT_FIXED_WITHDRAWAL_COST_LAMPORTS,
+	computeMaxTransferableLamports,
+	solToLamportsNonNegative,
+} from "../utils/max-transferable";
 
 /**
  * Cloak SDK - Privacy-preserving SOL and SPL token transfers on Solana
@@ -1123,6 +1134,15 @@ export class CloakSDK {
 					sourceIndex < sourceStates.length
 				) {
 					const source = sourceStates[sourceIndex];
+					// Always re-check fresh balance for the source wallet we're transferring FROM.
+					const refreshedSourceBalance = await this.getSolBalance(
+						source.signed,
+						true,
+					);
+					source.remainingLamports = BigInt(
+						refreshedSourceBalance.total.toString(),
+					);
+
 					if (source.remainingLamports <= 0n) {
 						sourceIndex++;
 						continue;
@@ -1133,6 +1153,8 @@ export class CloakSDK {
 						remainingForDestinationLamports
 							? source.remainingLamports
 							: remainingForDestinationLamports;
+					const sourceLamportsBeforeWithdrawal =
+						source.remainingLamports;
 
 					if (legLamports <= 0n) {
 						sourceIndex++;
@@ -1163,6 +1185,19 @@ export class CloakSDK {
 						source.remainingLamports -= legLamports;
 						remainingForDestinationLamports -= legLamports;
 						transferredLamports += legLamports;
+
+						// Wait for source-wallet UTXO state to update before using it again.
+						// Skip this for delayed withdrawals because UTXO updates are not immediate.
+						if ((options.delay ?? 0) === 0) {
+							const utxoUpdate = await this.waitForSourceUtxoStateChange(
+								source.signed,
+								sourceLamportsBeforeWithdrawal,
+								onStatus,
+							);
+							if (utxoUpdate.updatedLamports !== null) {
+								source.remainingLamports = utxoUpdate.updatedLamports;
+							}
+						}
 					} else {
 						sourceIndex++;
 					}
@@ -1198,39 +1233,94 @@ export class CloakSDK {
 		}
 	}
 
+	private async waitForSourceUtxoStateChange(
+		signed: Signed,
+		previousLamports: bigint,
+		onStatus?: (status: string) => void,
+		timeoutMs: number = 20_000,
+		pollMs: number = 1_200,
+	): Promise<{ updatedLamports: bigint | null }> {
+		const startedAt = Date.now();
+		let lastSeenLamports: bigint | null = previousLamports;
+
+		while (Date.now() - startedAt < timeoutMs) {
+			try {
+				const balance = await this.getSolBalance(signed, true);
+				const currentLamports = BigInt(balance.total.toString());
+				if (currentLamports !== previousLamports) {
+					onStatus?.(
+						`[UTXO check] Source UTXO state changed (${this.lamportsToSol(previousLamports)} -> ${this.lamportsToSol(currentLamports)} SOL).`,
+					);
+					return { updatedLamports: currentLamports };
+				}
+				lastSeenLamports = currentLamports;
+			} catch {
+				// Keep polling through transient RPC/relayer failures.
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, pollMs));
+		}
+
+		onStatus?.(
+			"[UTXO check] Timed out waiting for source UTXO update; continuing.",
+		);
+		return { updatedLamports: lastSeenLamports };
+	}
+
 	/**
 	 * Transfer all available SOL back to the SDK signer wallet for each keypair
 	 * and best-effort cancel pending delayed withdrawals at the relayer.
 	 */
-	async transferBack(keyPairs: Keypair[]): Promise<TransferBackResult> {
+	async transferBack(
+		keyPairs: Keypair[],
+		options: TransferBackOptions = {},
+	): Promise<TransferBackResult> {
 		this.ensureInitialized();
 
 		try {
 			if (!keyPairs?.length) {
 				throw new Error("transferBack requires at least one keypair");
 			}
+			const onStatus = options.onStatus || (() => {});
 			const recipient = this.requirePublicKey(
 				"transferBack requires an SDK signer as the destination wallet.",
 			);
 
 			const entries: TransferBackResult["entries"] = [];
+			let transferredBackLamports = 0n;
 
 			for (const keypair of keyPairs) {
 				const signed = await getAccountSign(keypair);
+				onStatus(
+					`[transferBack] processing ${keypair.publicKey.toBase58()}`,
+				);
 				const cancellation = await this.cancelPendingDelayedWithdrawals(signed);
-				const balance = await this.getSolBalance(signed, true);
-				const balanceLamports = balance.total.toString();
-				const balanceSol = this.lamportsToSol(BigInt(balanceLamports));
+				const maxTransferable = await this.getMaxTransferableAmount({
+					numberOfWithdrawals: 1,
+					signer: keypair,
+					utxoWalletSigned: signed,
+					forceRefresh: true,
+				});
+				const balanceLamports = maxTransferable.availableLamports;
 
 					let withdrawResult: WithdrawResult | undefined;
-					if (balanceSol > 0) {
+					if (maxTransferable.maxTransferableAmount > 0) {
 						withdrawResult = await this.withdrawSol({
 							recipientAddress: recipient,
-							amount: balanceSol,
+							amount: maxTransferable.maxTransferableAmount,
 							signer: keypair,
 							utxoWalletSigned: signed,
 							delayMinutes: 0,
+							onStatus: (status) =>
+								onStatus(
+									`[transferBack:${keypair.publicKey.toBase58()}] ${status}`,
+								),
 						});
+						if (withdrawResult.success) {
+							transferredBackLamports += BigInt(
+								maxTransferable.maxTransferableLamports,
+							);
+						}
 					}
 
 				entries.push({
@@ -1241,15 +1331,43 @@ export class CloakSDK {
 							? cancellation.warnings
 							: undefined,
 					balanceLamports,
+					maxTransferableAmount:
+						maxTransferable.maxTransferableAmount,
+					maxTransferableLamports:
+						maxTransferable.maxTransferableLamports,
 					withdrawResult,
 				});
 			}
 
-			const success = entries.every(
+			const transferBackSuccess = entries.every(
 				(entry) => !entry.withdrawResult || entry.withdrawResult.success === true,
 			);
+			const transferredBackAmount =
+				this.lamportsToSol(transferredBackLamports);
+			let redepositResult: DepositResult | undefined;
+			if (
+				options.redepositToPool &&
+				transferredBackLamports > 0n
+			) {
+				onStatus(
+					`[transferBack] redepositing ${transferredBackAmount} SOL into Cloak pool...`,
+				);
+				redepositResult = await this.depositSol({
+					amount: transferredBackAmount,
+					onStatus: (status) =>
+						onStatus(`[transferBack:redeposit] ${status}`),
+				});
+			}
+			const success =
+				transferBackSuccess &&
+				(!redepositResult || redepositResult.success);
 
-			return { success, entries };
+			return {
+				success,
+				entries,
+				transferredBackAmount,
+				redepositResult,
+			};
 		} catch (err) {
 			return {
 				success: false,
@@ -1274,6 +1392,90 @@ export class CloakSDK {
 				};
 			}),
 		);
+	}
+
+	/**
+	 * Estimate the maximum transferable SOL recipient amount from private balance
+	 * for a planned number of withdrawals.
+	 *
+	 * This accounts for:
+	 * - Variable withdraw fee rate (default protocol fee: 0.3%)
+	 * - Fixed per-withdrawal cost (default: 2 * 0.00095352 SOL)
+	 */
+	async getMaxTransferableAmount(
+		options: MaxTransferableOptions = {},
+	): Promise<MaxTransferableResult> {
+		this.ensureInitialized();
+
+		const numberOfWithdrawals = options.numberOfWithdrawals ?? 1;
+		const withdrawFeeRatePercent =
+			options.withdrawFeeRatePercent ?? WITHDRAW_FEE_RATE;
+		const fixedCostPerWithdrawalLamports =
+			options.fixedCostPerWithdrawalSol !== undefined
+				? solToLamportsNonNegative(
+						options.fixedCostPerWithdrawalSol,
+					)
+				: DEFAULT_FIXED_WITHDRAWAL_COST_LAMPORTS;
+
+		const balance = await this.getSolBalance(
+			options.utxoWalletSigned,
+			options.forceRefresh ?? true,
+			options.signer,
+		);
+		const availableLamports = BigInt(balance.total.toString());
+
+		const computed = computeMaxTransferableLamports({
+			availableLamports,
+			numberOfWithdrawals,
+			withdrawFeeRatePercent,
+			fixedCostPerWithdrawalLamports,
+		});
+
+		return {
+			maxTransferableAmount: this.lamportsToSol(
+				computed.maxTransferableLamports,
+			),
+			maxTransferableLamports:
+				computed.maxTransferableLamports.toString(),
+			availableAmount: this.lamportsToSol(
+				computed.availableLamports,
+			),
+			availableLamports: computed.availableLamports.toString(),
+			numberOfWithdrawals:
+				computed.numberOfWithdrawals,
+			withdrawFeeRatePercent:
+				computed.withdrawFeeRatePercent,
+			fixedCostPerWithdrawalSol:
+				this.lamportsToSol(
+					computed.fixedCostPerWithdrawalLamports,
+				),
+			totalFixedCostSol: this.lamportsToSol(
+				computed.totalFixedCostLamports,
+			),
+			totalFixedCostLamports:
+				computed.totalFixedCostLamports.toString(),
+			estimatedVariableFeeSol:
+				this.lamportsToSol(
+					computed.variableFeeAtMaxLamports,
+				),
+			estimatedVariableFeeLamports:
+				computed.variableFeeAtMaxLamports.toString(),
+			estimatedTotalFeeSol:
+				this.lamportsToSol(
+					computed.totalFeeAtMaxLamports,
+				),
+			estimatedTotalFeeLamports:
+				computed.totalFeeAtMaxLamports.toString(),
+		};
+	}
+
+	/**
+	 * Backward-compatible alias for misspelled method name.
+	 */
+	async getMaxTransferrableAmount(
+		options: MaxTransferableOptions = {},
+	): Promise<MaxTransferableResult> {
+		return await this.getMaxTransferableAmount(options);
 	}
 
 	private validateTransferOptions(options: TransferOptions): void {
