@@ -1,443 +1,304 @@
-# @cloak-labs/sdk
+# @cloak-dev/sdk
 
-Official SDK for the Cloak Privacy Protocol on Solana. Deposit and withdraw SOL and SPL tokens with zero-knowledge proof privacy guarantees.
+Official TypeScript SDK for Cloak Privacy Protocol on Solana.
 
-## Features
+## Latest updates
 
-- **Privacy-Preserving Transfers**: Zero-knowledge proofs ensure transaction privacy
-- **SOL Support**: Deposit and withdraw native SOL
-- **SPL Token Support**: Full support for SPL tokens (USDC, USDT, etc.)
-- **Delayed Withdrawals**: Optional delayed withdrawals for enhanced security
-- **Keypair-Based**: Simple initialization with Solana Keypair
-- **TypeScript**: Full TypeScript support with comprehensive types
-- **Production Ready**: Built on audited smart contracts
+- Added high-level transfer workflows: `transfer(...)` and `transferBack(...)`
+- Added max-withdrawable estimator: `getMaxTransferableAmount(...)`
+- Added SPL batch deposits: `batchDepositSpl(...)`
+- Added required configurable ALT support via `altAddress`
+- Added wallet adapter helpers and React hooks (`@cloak-dev/sdk/react`)
+- Improved withdraw responses with `signatures[]` (batch) and max-withdrawable hints on insufficient balance
 
 ## Installation
 
 ```bash
-npm install @cloak-labs/sdk
-
+npm install @cloak-dev/sdk
 # or
-yarn add @cloak-labs/sdk
-
+pnpm add @cloak-dev/sdk
 # or
-pnpm add @cloak-labs/sdk
+yarn add @cloak-dev/sdk
 ```
 
-## Quick Start
+## Required configuration
 
-```typescript
-import { CloakSDK, Connection, Keypair } from '@cloak-labs/sdk';
+`CloakSDK` now requires:
 
-// Initialize connection and keypair
-const connection = new Connection('https://api.devnet.solana.com');
+- `connection`: Solana `Connection`
+- `relayerUrl`: Cloak relayer base URL
+- `altAddress`: Address Lookup Table for your cluster
+
+Known ALT addresses:
+
+- Mainnet: `G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj`
+- Devnet: `Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9`
+
+## Quick start
+
+```ts
+import { CloakSDK, Connection, Keypair, LAMPORTS_PER_SOL } from '@cloak-dev/sdk';
+
+const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 const keypair = Keypair.fromSecretKey(secretKeyBytes);
 
-// Create SDK instance
 const sdk = new CloakSDK({
   connection,
-  verbose: true // Optional: enable logging
+  relayerUrl: 'https://your-relayer-url',
+  altAddress: 'G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj',
+  verbose: false,
 });
 
-// Initialize SDK (required before use)
-await sdk.initialize();
-
-// Provide signer only when you need signing operations
 sdk.setSigner(keypair);
+await sdk.initialize();
 
-// Now you can use all SDK functions
+const deposit = await sdk.depositSol({ amount: 0.01 });
+if (!deposit.success) throw new Error(deposit.error);
+
+const bal = await sdk.getSolBalance();
+console.log('Private SOL:', bal.total.toNumber() / LAMPORTS_PER_SOL);
 ```
 
-## API Reference
+## API overview
 
-### Constructor
+### Core SOL
 
-#### `new CloakSDK(config: CloakSDKConfig)`
+- `depositSol(options: DepositOptions): Promise<DepositResult>`
+- `withdrawSol(options: WithdrawOptions): Promise<WithdrawResult>`
+- `batchDepositSol(options: BatchDepositOptions): Promise<BatchDepositResult>`
 
-Creates a new SDK instance.
+### Core SPL
 
-**Parameters:**
-- `config.connection` (Connection): Solana connection instance
-- `config.relayerUrl` (string): Cloak relayer base URL (must serve `/tx/prepare` or `/merkle/root`, plus `/utxos/range`)
-- `config.programId` (string, optional): Custom program ID. Defaults to mainnet program
-- `config.verbose` (boolean, optional): Enable verbose logging. Default: false
+- `depositSpl(options: DepositSplOptions): Promise<DepositResult>`
+- `withdrawSpl(options: WithdrawSplOptions): Promise<WithdrawResult>`
+- `batchDepositSpl(options: BatchDepositSplOptions): Promise<BatchDepositResult>`
 
-### Initialization
+### Transfers and automation
 
-#### `await sdk.initialize()`
+- `fullTransfer({ depositAmount, withdrawAmount, recipientAddress?, waitSeconds?, onStatus? })`
+- `transfer(options: TransferOptions): Promise<TransferResult>`
+- `transferBack(keypairs, options?): Promise<TransferBackResult>`
 
-Initializes the SDK by loading the Poseidon hasher.
-**Must be called before any other operations.**
+### Balances and cache
 
-```typescript
+- `getSolBalance(utxoWalletSigned?, forceRefresh?, signer?)`
+- `getSplBalance(mintAddress, utxoWalletSigned?, forceRefresh?, signer?)`
+- `batchBalanceCheck(keypairs)`
+- `refreshUtxos()`
+- `clearCache()`
+
+### Estimation
+
+- `getMaxTransferableAmount(options?: MaxTransferableOptions)`
+- `getMaxTransferrableAmount(options?)` (backward-compatible alias)
+
+### Signer management
+
+- `setSigner(signer)`
+- `clearSigner()`
+- `getPublicKey()`
+- `getConnection()`
+
+## Common examples
+
+### Withdraw with max-withdrawable fallback
+
+```ts
+const requested = 0.25;
+let res = await sdk.withdrawSol({
+  recipientAddress: sdk.getPublicKey(),
+  amount: requested,
+});
+
+if (!res.success && typeof res.maxWithdrawableAmount === 'number' && res.maxWithdrawableAmount > 0) {
+  res = await sdk.withdrawSol({
+    recipientAddress: sdk.getPublicKey(),
+    amount: res.maxWithdrawableAmount,
+  });
+}
+
+if (!res.success) throw new Error(res.error);
+console.log('Signature:', res.signature);
+```
+
+### Delayed withdrawal
+
+```ts
+const delayed = await sdk.withdrawSol({
+  recipientAddress: sdk.getPublicKey(),
+  amount: 0.1,
+  delayMinutes: 30,
+});
+
+if (delayed.success) {
+  console.log(delayed.delayedWithdrawalId); // string
+  console.log(delayed.executeAt);           // ISO timestamp
+}
+```
+
+### SPL deposit/withdraw
+
+```ts
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+await sdk.depositSpl({ amount: 1_000_000, mintAddress: USDC_MINT }); // 1 USDC (6 decimals)
+await sdk.withdrawSpl({
+  recipientAddress: sdk.getPublicKey(),
+  amount: 500_000,
+  mintAddress: USDC_MINT,
+});
+```
+
+### Transfer between private wallets
+
+```ts
+const result = await sdk.transfer({
+  in: [sourceA, sourceB],
+  out: [destA, destB],
+  amount: 1.2,
+  delay: 0,
+});
+
+if (!result.success) {
+  console.error(result.error);
+}
+```
+
+### Transfer back to active signer
+
+```ts
+const result = await sdk.transferBack([sourceA, sourceB], {
+  redepositToPool: false,
+});
+
+console.log(result.transferredBackAmount);
+```
+
+### Estimate max transferable SOL
+
+```ts
+const estimate = await sdk.getMaxTransferableAmount({
+  numberOfWithdrawals: 2,
+});
+
+console.log(estimate.maxTransferableAmount);
+console.log(estimate.estimatedTotalFeeSol);
+```
+
+## Multi-wallet UTXO signature usage
+
+For advanced flows, you can derive UTXOs from a different wallet identity:
+
+```ts
+import { generateUtxoWalletSignature } from '@cloak-dev/sdk';
+
+const utxoWalletSigned = await generateUtxoWalletSignature(utxoKeypair);
+
+await sdk.depositSol({
+  amount: 0.01,
+  utxoWalletSigned,
+  utxoWalletSignTransaction: async (tx) => {
+    tx.sign([fundingKeypair]);
+    return tx;
+  },
+});
+```
+
+## Batch planning utilities
+
+Exported helpers:
+
+- `planBatchDeposits`, `previewBatchDeposit`
+- `planBatchSplDeposits`, `previewBatchSplDeposit`
+- `planBatchWithdrawals`, `previewBatchWithdrawal`
+
+```ts
+import { previewBatchDeposit } from '@cloak-dev/sdk';
+
+const preview = previewBatchDeposit(2.5);
+if (preview) {
+  console.log(preview.numTransactions);
+  console.log(preview.breakdown);
+}
+```
+
+## Wallet adapter integration
+
+Utilities exported from the main package:
+
+- `WalletConnector`
+- `createSignerFromAdapter`
+- `isSignableAdapter`
+- `supportsBatchSigning`
+- `supportsMessageSigning`
+
+```ts
+import { CloakSDK, createSignerFromAdapter } from '@cloak-dev/sdk';
+
+const signer = createSignerFromAdapter(walletAdapter);
+const sdk = new CloakSDK({
+  connection,
+  relayerUrl: 'https://your-relayer-url',
+  altAddress: 'G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj',
+});
+sdk.setSigner(signer);
 await sdk.initialize();
 ```
 
-### SOL Operations
+## React integration
 
-#### `await sdk.depositSol(options: DepositOptions): Promise<DepositResult>`
-
-Deposit SOL into the privacy pool.
-
-**Parameters:**
-- `options.amount` (number): Amount in SOL (e.g., 0.5 for half a SOL)
-- `options.onStatus` ((status: string) => void, optional): Callback for status updates
-
-**Returns:** `DepositResult`
-- `success` (boolean): Whether deposit succeeded
-- `signature` (string, optional): Transaction signature
-- `error` (string, optional): Error message if failed
-
-**Example:**
-```typescript
-const result = await sdk.depositSol({
-  amount: 0.5,
-  onStatus: (status) => console.log('Status:', status)
-});
-
-if (result.success) {
-  console.log('Deposit successful:', result.signature);
-  console.log(`View on explorer: https://explorer.solana.com/tx/${result.signature}`);
-}
-```
-
-#### `await sdk.withdrawSol(options: WithdrawOptions): Promise<WithdrawResult>`
-
-Withdraw SOL from the privacy pool.
-
-**Parameters:**
-- `options.recipientAddress` (PublicKey | string): Recipient's wallet address
-- `options.amount` (number): Amount in SOL to withdraw
-- `options.delayMinutes` (number, optional): Delay before execution (0 for immediate). Max: 10080 (7 days)
-- `options.onStatus` ((status: string) => void, optional): Callback for status updates
-
-**Returns:** `WithdrawResult`
-- `isPartial` (boolean): Whether withdrawal was partial (insufficient balance)
-- `success` (boolean): Whether withdrawal succeeded
-- `signature` (string, optional): Transaction signature (for immediate withdrawals)
-- `delayedWithdrawalId` (number, optional): ID for delayed withdrawals
-- `executeAt` (string, optional): ISO timestamp when delayed withdrawal will execute
-- `error` (string, optional): Error message if failed
-
-**Example (Immediate):**
-```typescript
-const result = await sdk.withdrawSol({
-  recipientAddress: 'recipient-pubkey-here',
-  amount: 0.3,
-});
-
-if (result.success) {
-  console.log('Withdrawal successful!');
-  if (result.isPartial) {
-    console.log('Note: Partial withdrawal due to insufficient balance');
-  }
-}
-```
-
-**Example (Delayed):**
-```typescript
-const result = await sdk.withdrawSol({
-  recipientAddress: new PublicKey('...'),
-  amount: 0.3,
-  delayMinutes: 30, // Execute after 30 minutes
-});
-
-if (result.success) {
-  console.log('Withdrawal scheduled!');
-  console.log('ID:', result.delayedWithdrawalId);
-  console.log('Will execute at:', result.executeAt);
-}
-```
-
-#### `await sdk.batchDepositSol(options: BatchDepositOptions): Promise<BatchDepositResult>`
-
-Perform multiple SOL deposits with optimized denomination breakdown and single wallet signature.
-
-**Parameters:**
-- `options.amount` (number): Total amount in SOL to deposit
-- `options.onStatus` ((status: string) => void, optional): Callback for status updates
-
-**Returns:** `BatchDepositResult`
-- `success` (boolean): Whether all deposits succeeded
-- `totalDeposited` (number): Total amount deposited
-- `transactionCount` (number): Number of transactions executed
-- `signatures` (string[]): Array of transaction signatures
-- `error` (string, optional): Error message if failed
-
-**Example:**
-```typescript
-// Deposit 1.5 SOL broken into optimal denominations
-const result = await sdk.batchDepositSol({
-  amount: 1.5,
-  onStatus: (status) => console.log('Batch:', status)
-});
-
-if (result.success) {
-  console.log(`Deposited ${result.totalDeposited} SOL in ${result.transactionCount} transactions`);
-  result.signatures.forEach((sig, i) => {
-    console.log(`Transaction ${i + 1}: ${sig}`);
-  });
-}
-```
-
-### SPL Token Operations
-
-#### `await sdk.depositSpl(options: DepositSplOptions): Promise<DepositResult>`
-
-Deposit SPL tokens into the privacy pool.
-
-**Parameters:**
-- `options.amount` (number): Amount in base units (e.g., 1000000 for 1 USDC with 6 decimals)
-- `options.mintAddress` (string): SPL token mint address
-- `options.onStatus` ((status: string) => void, optional): Callback for status updates
-
-**Example:**
-```typescript
-// Deposit 1 USDC (6 decimals)
-const result = await sdk.depositSpl({
-  amount: 1_000_000,
-  mintAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC mint
-  onStatus: (status) => console.log(status)
-});
-
-if (result.success) {
-  console.log('USDC deposit successful:', result.signature);
-}
-```
-
-#### `await sdk.withdrawSpl(options: WithdrawSplOptions): Promise<WithdrawResult>`
-
-Withdraw SPL tokens from the privacy pool.
-
-**Parameters:**
-- `options.recipientAddress` (PublicKey | string): Recipient's wallet address
-- `options.amount` (number): Amount in base units
-- `options.mintAddress` (string): SPL token mint address
-- `options.delayMinutes` (number, optional): Delay before execution
-- `options.onStatus` ((status: string) => void, optional): Callback for status updates
-
-**Example:**
-```typescript
-// Immediate SPL withdrawal
-const result = await sdk.withdrawSpl({
-  recipientAddress: 'recipient-pubkey-here',
-  amount: 500_000, // 0.5 USDC
-  mintAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-});
-
-// Delayed SPL withdrawal
-const delayedResult = await sdk.withdrawSpl({
-  recipientAddress: new PublicKey('...'),
-  amount: 500_000,
-  mintAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-  delayMinutes: 60, // Execute after 1 hour
-});
-```
-
-### Balance Queries
-
-#### `await sdk.getSolBalance(): Promise<UtxoBalance>`
-
-Get your SOL balance in the privacy pool.
-
-**Returns:** `UtxoBalance`
-- `total` (BN): Total balance in lamports
-- `count` (number): Number of UTXOs
-- `mintAddress` (string): Mint address
-
-**Example:**
-```typescript
-const balance = await sdk.getSolBalance();
-console.log('SOL balance:', balance.total.toNumber() / 1e9, 'SOL');
-console.log('Number of UTXOs:', balance.count);
-```
-
-#### `await sdk.getSplBalance(mintAddress: string): Promise<UtxoBalance>`
-
-Get your SPL token balance in the privacy pool.
-
-**Parameters:**
-- `mintAddress` (string): SPL token mint address
-
-**Example:**
-```typescript
-const usdcBalance = await sdk.getSplBalance('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
-console.log('USDC balance:', usdcBalance.total.toNumber() / 1e6);
-console.log('Number of UTXOs:', usdcBalance.count);
-```
-
-### Utility Methods
-
-#### `sdk.getPublicKey(): PublicKey`
-
-Get the user's public key.
-
-#### `sdk.getConnection(): Connection`
-
-Get the Solana connection instance.
-
-### Batch Planning Utilities
-
-#### `planBatchDeposits(totalAmount: number): BatchDepositPlan | null`
-
-Plan how to split a large deposit into denomination-based transactions.
-
-#### `previewBatchDeposit(totalAmount: number): BatchPreview | null`
-
-Preview batch deposit operations without executing them.
-
-**Example:**
-```typescript
-import { planBatchDeposits, previewBatchDeposit } from '@cloak-labs/sdk';
-
-const preview = previewBatchDeposit(2.5); // 2.5 SOL
-if (preview) {
-  console.log(`Will create ${preview.numTransactions} transactions`);
-  console.log(`Estimated time: ${preview.estimatedTime} seconds`);
-  console.log('Breakdown:', preview.breakdown);
-}
-```
-
-## Complete Example
-
-```typescript
-import { CloakSDK, Connection, Keypair, LAMPORTS_PER_SOL } from '@cloak-labs/sdk';
-import fs from 'fs';
-
-async function main() {
-  // Load keypair from file
-  const secretKey = JSON.parse(
-    fs.readFileSync('/path/to/keypair.json', 'utf-8')
-  );
-  const keypair = Keypair.fromSecretKey(new Uint8Array(secretKey));
-
-  // Initialize SDK
-  const connection = new Connection('https://api.devnet.solana.com');
-  const sdk = new CloakSDK({
-    connection,
-    signer: keypair,
-    verbose: true,
-  });
-
-  await sdk.initialize();
-  console.log('SDK initialized with wallet:', sdk.getPublicKey().toString());
-
-  // Check current balance
-  const balance = await sdk.getSolBalance();
-  console.log('Current privacy pool balance:', balance.total.toNumber() / LAMPORTS_PER_SOL, 'SOL');
-
-  // Deposit SOL
-  console.log('\nDepositing 0.1 SOL...');
-  const depositResult = await sdk.depositSol({
-    amount: 0.1,
-    onStatus: (status) => console.log('  →', status),
-  });
-
-  if (!depositResult.success) {
-    console.error('Deposit failed:', depositResult.error);
-    return;
-  }
-
-  console.log('Deposit successful:', depositResult.signature);
-
-  // Wait a bit for relayer to update
-  console.log('\nWaiting for relayer to update...');
-  await new Promise(resolve => setTimeout(resolve, 10000));
-
-  // Check updated balance
-  const newBalance = await sdk.getSolBalance();
-  console.log('New privacy pool balance:', newBalance.total.toNumber() / LAMPORTS_PER_SOL, 'SOL');
-
-  // Withdraw with delay
-  console.log('\nScheduling withdrawal of 0.05 SOL (30 minute delay)...');
-  const withdrawResult = await sdk.withdrawSol({
-    recipientAddress: sdk.getPublicKey(), // Withdraw to self
-    amount: 0.05,
-    delayMinutes: 30,
-    onStatus: (status) => console.log('  →', status),
-  });
-
-  if (!withdrawResult.success) {
-    console.error('Withdrawal scheduling failed:', withdrawResult.error);
-    return;
-  }
-
-  console.log('Withdrawal scheduled!');
-  console.log('  ID:', withdrawResult.delayedWithdrawalId);
-  console.log('  Will execute at:', withdrawResult.executeAt);
-}
-
-main().catch(console.error);
-```
-
-## Error Handling
-
-```typescript
-try {
-  const result = await sdk.depositSol({ amount: 0.5 });
-
-  if (!result.success) {
-    console.error('Deposit failed:', result.error);
-    // Handle specific errors
-    if (result.error?.includes('Insufficient balance')) {
-      console.log('You need more SOL in your wallet');
-    }
-  }
-} catch (error) {
-  console.error('Unexpected error:', error);
-}
-```
-
-## Common SPL Token Mint Addresses
-
-- **USDC**: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
-- **USDT**: `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`
-- **SOL (native)**: Use `depositSol`/`withdrawSol` methods instead
-
-## Fee Structure
-
-- **Deposit Fee**: 0.3% of deposit amount
-- **Withdrawal Fee**: 0.3% of withdrawal amount
-
-Fees are automatically deducted from the transaction amounts.
-
-## Security Considerations
-
-1. **Keypair Safety**: Never share or commit your secret key
-2. **Delayed Withdrawals**: Use delays for large amounts to detect unauthorized access
-3. **Balance Verification**: Always check balances before operations
-4. **Error Handling**: Implement proper error handling in production
-
-## TypeScript Support
-
-The SDK is written in TypeScript and provides full type definitions:
-
-```typescript
-import type {
-  CloakSDKConfig,
-  DepositOptions,
-  DepositResult,
-  WithdrawOptions,
-  WithdrawResult,
-  UtxoBalance,
-} from '@cloak-labs/sdk';
-```
-
-## Building from Source
+Install peers if needed:
 
 ```bash
-# Clone the repository
-git clone https://github.com/reflow-xyz/cloaksdk
-cd cloak-sdk/
-
-# Install dependencies
-pnpm install
-
-# Build
-ts-node example.ts
+npm install @solana/wallet-adapter-react react
 ```
 
-## Support
+Use the React hook package entrypoint:
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/reflow-xyz/cloaksdk/issues)
-- **Documentation**: [Full protocol documentation](https://cloaklabs.dev/docs)
+```ts
+import { useCloakSDK } from '@cloak-dev/sdk/react';
+
+const { sdk, isReady, error } = useCloakSDK({
+  relayerUrl: 'https://your-relayer-url',
+  altAddress: 'G1Wc4i6fqiEY1UYn27y6E6RFCBSB1cQ256pAzwrmbiPj',
+});
+```
+
+## Error handling
+
+The SDK exposes typed errors and helpers:
+
+- `ErrorCodes`
+- `CloakError`, `ValidationError`, `NetworkError`, `TransactionError`, `EncryptionError`, `ConfigurationError`, `ProofError`
+- `isCloakError`, `hasErrorCode`, `wrapError`
+
+```ts
+import { isCloakError, ErrorCodes } from '@cloak-dev/sdk';
+
+try {
+  await sdk.depositSol({ amount: 0.1 });
+} catch (err) {
+  if (isCloakError(err) && err.code === ErrorCodes.INSUFFICIENT_BALANCE) {
+    console.error('Top up wallet balance first.');
+  }
+}
+```
+
+## Fees
+
+- Deposit fee: `0%`
+- Withdraw fee: `0.3%`
+
+## Development
+
+```bash
+npm run build
+npm run typecheck
+npm run test
+npm run check
+```
+
+## Links
+
+- Repository: `https://github.com/reflow-xyz/cloaksdk`
+- Issues: `https://github.com/reflow-xyz/cloaksdk/issues`
