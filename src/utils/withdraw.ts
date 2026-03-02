@@ -419,6 +419,7 @@ export async function withdraw(
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
+	referralCode?: string, // Optional: referral code for private fee sharing
 ): Promise<{
 	isPartial: boolean;
 	success?: boolean;
@@ -1059,6 +1060,7 @@ export async function withdraw(
 			encryptedOutput2: uint8ArrayToBase64(encryptedOutput2),
 			fee: fee_amount_in_lamports,
 			lookupTableAddress: altAddress.toString(),
+			...(referralCode ? { referrer: referralCode } : {}),
 		};
 
 		// Check if root changed before submitting transaction
@@ -1087,6 +1089,7 @@ export async function withdraw(
 					providedUtxos,
 					circuitPath,
 					altAddress,
+					referralCode,
 				);
 			}
 		} catch (err) {
@@ -1283,6 +1286,7 @@ export async function withdraw(
 					providedUtxos,
 					circuitPath,
 					altAddress,
+					referralCode,
 				);
 			}
 		}
@@ -1377,6 +1381,7 @@ export async function withdraw(
 							: undefined,
 						circuitPath,
 						altAddress,
+						referralCode,
 					);
 			}
 			error(" UTXO already spent (nullifier already used)");
@@ -1473,6 +1478,7 @@ export async function withdraw(
 				providedUtxos,
 				circuitPath,
 				altAddress,
+				referralCode,
 			);
 		}
 

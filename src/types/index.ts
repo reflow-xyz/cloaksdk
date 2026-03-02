@@ -45,6 +45,8 @@ export interface CloakSDKConfig {
    * - Devnet: Dy1kWrcceThLo9ywoMH2MpWTsBe9pxsv3fCcTj3sSDK9
    */
   altAddress: PublicKey | string;
+  /** Optional: default referral code for all transactions */
+  referralCode?: string;
 }
 
 /**
@@ -130,6 +132,8 @@ export interface WithdrawOptions {
   utxoWalletSignTransaction?: (tx: VersionedTransaction) => Promise<VersionedTransaction>;
   /** Optional: provide specific UTXOs to use (for batch withdrawals) */
   providedUtxos?: import('../models/utxo').Utxo[];
+  /** Optional: referral code for private referral fee sharing */
+  referralCode?: string;
 }
 
 /**

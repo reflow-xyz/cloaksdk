@@ -71,6 +71,15 @@ export type { BatchWithdrawPlan } from './utils/batch-withdraw';
 export type { BatchDepositPlan } from './utils/batch-deposit';
 export { isHardwareAccelerationEnabled } from './utils/encryption';
 
+// Export stealth/referral utilities
+export {
+  generateMetaAddress,
+  deriveStealthKeypair,
+  scanForPayments,
+  sweepStealthAddresses,
+} from './utils/stealth';
+export type { MetaAddress, ScannedStealth } from './utils/stealth';
+
 // Export error types and codes
 export {
   ErrorCodes,

@@ -109,6 +109,7 @@ export class CloakSDK {
 	private altAddress: PublicKey;
 	private hasher: LightWasm | null = null;
 	private initialized: boolean = false;
+	private referralCode: string | undefined;
 	private lastKnownTreeIndex: number = -1;
 	private lastTreeStateCheckAtMs: number = 0;
 	private readonly treeStateCheckIntervalMs: number = 2_000;
@@ -132,6 +133,8 @@ export class CloakSDK {
 		this.altAddress = typeof config.altAddress === 'string'
 			? new PublicKey(config.altAddress)
 			: config.altAddress;
+
+		this.referralCode = config.referralCode;
 
 		// Set global verbose mode for logger
 		setVerbose(this.verbose);
@@ -823,6 +826,7 @@ export class CloakSDK {
 				options.providedUtxos,
 				this.circuitPath,
 				this.altAddress,
+				options.referralCode ?? this.referralCode,
 			);
 
 			if (result.success) {
@@ -931,6 +935,7 @@ export class CloakSDK {
 				options.providedUtxos,
 				this.circuitPath,
 				this.altAddress,
+				options.referralCode ?? this.referralCode,
 			);
 
 			if (result.success) {
@@ -1950,6 +1955,97 @@ export class CloakSDK {
 		this.signer = null;
 		this.publicKey = null;
 		this.accountSignCache.clear();
+	}
+
+	// ─── Referral Methods ──────────────────────────────────────
+
+	/**
+	 * Set a default referral code for all subsequent transactions.
+	 * Can also be overridden per-withdrawal via `options.referralCode`.
+	 */
+	setReferralCode(code: string | undefined): void {
+		this.referralCode = code;
+	}
+
+	/**
+	 * Register as a referrer. Generates a stealth meta-address (spend + view keypair),
+	 * registers it with the backend, and returns a shareable referral code.
+	 *
+	 * The returned `metaAddress` must be saved securely — it contains the private keys
+	 * needed to sweep referral earnings.
+	 *
+	 * @returns Referral code and meta-address for future sweeping
+	 */
+	async registerAsReferrer(): Promise<{
+		referralCode: string;
+		metaAddress: {
+			spendKeypair: Keypair;
+			viewSecret: Uint8Array;
+			viewPubkeyHex: string;
+		};
+	}> {
+		const { generateMetaAddress } = await import("../utils/stealth");
+		const meta = generateMetaAddress();
+
+		const response = await fetchWithRetry(
+			`${this.relayerUrl}/referral/register`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					referrerSpendPubkey: meta.spendKeypair.publicKey.toString(),
+					viewPubkeyHex: meta.viewPubkeyHex,
+				}),
+			},
+			3,
+		);
+
+		const result = (await response.json()) as {
+			success: boolean;
+			data?: { referralCode: string };
+			error?: string;
+		};
+
+		if (!result.success || !result.data) {
+			throw new Error(result.error || "Failed to register as referrer");
+		}
+
+		return {
+			referralCode: result.data.referralCode,
+			metaAddress: meta,
+		};
+	}
+
+	/**
+	 * Scan for and sweep all pending referral earnings to a destination address.
+	 *
+	 * @param metaAddress - The meta-address returned from `registerAsReferrer()`
+	 * @param destination - Where to send the swept funds
+	 * @returns Array of sweep transaction signatures
+	 */
+	async sweepReferralEarnings(
+		metaAddress: {
+			spendKeypair: Keypair;
+			viewSecret: Uint8Array;
+		},
+		destination: PublicKey | string,
+	): Promise<string[]> {
+		const { scanForPayments, sweepStealthAddresses } = await import("../utils/stealth");
+		const destinationPubkey = typeof destination === "string"
+			? new PublicKey(destination)
+			: destination;
+
+		const scanned = await scanForPayments(
+			metaAddress,
+			this.relayerUrl,
+			this.connection,
+		);
+
+		if (scanned.length === 0) {
+			return [];
+		}
+
+		return sweepStealthAddresses(scanned, destinationPubkey, this.connection);
 	}
 
 	private requirePublicKey(errorMessage: string): PublicKey {

@@ -329,6 +329,7 @@ export async function withdrawSpl(
 	providedUtxos?: Utxo[], // Optional: provide specific UTXOs to use (for batch withdrawals)
 	circuitPath: string = CIRCUIT_PATH, // Path to circuit files
 	altAddress?: PublicKey, // Address Lookup Table address for transaction optimization
+	referralCode?: string, // Optional: referral code for private fee sharing
 ): Promise<{
 	isPartial: boolean;
 	success?: boolean;
@@ -732,6 +733,7 @@ export async function withdrawSpl(
 			lookupTableAddress: altAddress
 				? altAddress.toString()
 				: "",
+			...(referralCode ? { referrer: referralCode } : {}),
 		};
 
 		// Check if root changed before submitting transaction
@@ -761,6 +763,7 @@ export async function withdrawSpl(
 					providedUtxos,
 					circuitPath,
 					altAddress,
+					referralCode,
 				);
 			}
 		} catch (err) {
@@ -929,6 +932,7 @@ export async function withdrawSpl(
 					providedUtxos,
 					circuitPath,
 					altAddress,
+					referralCode,
 				);
 			}
 		}
@@ -997,6 +1001,7 @@ export async function withdrawSpl(
 				providedUtxos,
 				circuitPath,
 				altAddress,
+				referralCode,
 			);
 		}
 

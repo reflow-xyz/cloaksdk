@@ -99,6 +99,233 @@ console.log('Private SOL:', bal.total.toNumber() / LAMPORTS_PER_SOL);
 - `getPublicKey()`
 - `getConnection()`
 
+## API reference
+
+### Core SOL
+
+#### `depositSol(options: DepositOptions): Promise<DepositResult>`
+
+Parameters:
+- `options.amount`: SOL amount to deposit.
+- `options.signer?`: per-call signer override (`TransactionSigner | Keypair`).
+- `options.consolidate?`: if `true`, consolidate existing UTXOs into this deposit.
+- `options.onStatus?`: status callback.
+- `options.maxRetries?`: retry attempts (default `3`).
+- `options.utxoWalletSigned?`: alternate UTXO identity.
+- `options.utxoWalletSignTransaction?`: required when using alternate UTXO identity for deposits.
+
+Returns (`DepositResult`):
+- `success`: boolean.
+- `signature?`: transaction signature.
+- `error?`: error message.
+
+#### `withdrawSol(options: WithdrawOptions): Promise<WithdrawResult>`
+
+Parameters:
+- `options.recipientAddress`: destination wallet (`PublicKey | string`).
+- `options.amount`: SOL amount to withdraw.
+- `options.signer?`: per-call signer override.
+- `options.delayMinutes?`: delayed withdrawal (0 or omitted = immediate).
+- `options.onStatus?`: status callback.
+- `options.maxRetries?`: retry attempts (default `3`).
+- `options.utxoWalletSigned?`: alternate UTXO identity.
+- `options.utxoWalletSignTransaction?`: API-compatible field (not currently used for withdraw signing).
+- `options.providedUtxos?`: explicit UTXO set for advanced/batch strategies.
+
+Returns (`WithdrawResult`):
+- `isPartial`: whether execution was partial.
+- `success?`: success flag.
+- `signature?`: immediate tx signature (or first signature in multi-tx withdrawal).
+- `signatures?`: all signatures when withdrawal is split across multiple txs.
+- `delayedWithdrawalId?`: delayed job ID.
+- `executeAt?`: delayed execution timestamp (ISO string).
+- `maxWithdrawableAmount?`: fee-aware SOL ceiling when requested amount is too large.
+- `maxWithdrawableLamports?`: exact lamports ceiling when requested amount is too large.
+- `error?`: error message.
+
+#### `batchDepositSol(options: BatchDepositOptions): Promise<BatchDepositResult>`
+
+Parameters:
+- `options.amount`: total SOL to split by denomination.
+- `options.signer?`: per-call signer override.
+- `options.onStatus?`: status callback.
+- `options.maxRetries?`: retry attempts.
+- `options.utxoWalletSigned?`: alternate UTXO identity.
+- `options.utxoWalletSignTransaction?`: optional UTXO wallet tx signer.
+
+Notes:
+- Requires signer support for `signAllTransactions`.
+- Generates multiple proof/tx builds, signs once, then submits sequentially.
+
+Returns (`BatchDepositResult`):
+- `success`: whether at least one deposit succeeded.
+- `signatures`: submitted transaction signatures.
+- `successCount`: number of successful deposits.
+- `totalCount`: number of planned deposits.
+- `error?`: summary error if not fully successful.
+
+### Core SPL
+
+#### `depositSpl(options: DepositSplOptions): Promise<DepositResult>`
+
+`DepositSplOptions` is `DepositOptions` plus:
+- `mintAddress`: SPL mint address.
+
+Return shape is `DepositResult` (same as `depositSol`).
+
+#### `withdrawSpl(options: WithdrawSplOptions): Promise<WithdrawResult>`
+
+`WithdrawSplOptions` is `WithdrawOptions` plus:
+- `mintAddress`: SPL mint address.
+
+Return shape is `WithdrawResult` (same as `withdrawSol`, except max-withdrawable fields are SOL-specific hints from `withdrawSol`).
+
+#### `batchDepositSpl(options: BatchDepositSplOptions): Promise<BatchDepositResult>`
+
+`BatchDepositSplOptions` is `BatchDepositOptions` plus:
+- `mintAddress`: SPL mint address.
+
+Return shape is `BatchDepositResult` (same as `batchDepositSol`).
+
+### Transfers and automation
+
+#### `fullTransfer({ depositAmount, withdrawAmount, recipientAddress?, waitSeconds?, onStatus? })`
+
+Parameters:
+- `depositAmount`: SOL to deposit first.
+- `withdrawAmount`: SOL to withdraw after deposit.
+- `recipientAddress?`: withdrawal recipient (`PublicKey | string`); defaults to active signer.
+- `waitSeconds?`: compatibility field used to derive delay minutes.
+- `onStatus?`: status callback.
+
+Returns:
+- `{ depositResult: DepositResult, withdrawResult: WithdrawResult }`.
+
+#### `transfer(options: TransferOptions): Promise<TransferResult>`
+
+Parameters (`TransferOptions`):
+- `in`: source `Keypair[]` (private balances are read from these).
+- `out`: destination `Keypair[]`.
+- `amount`: total SOL requested.
+- `bps?`: destination split map (`Map<Keypair | PublicKey | string, number>`).
+- `delay?`: delay minutes per withdrawal leg.
+- `onStatus?`: status callback.
+- `maxRetries?`: retry attempts per leg.
+
+Returns (`TransferResult`):
+- `success`: all legs succeeded and attempted amount fully transferred.
+- `requestedAmount`: original requested SOL.
+- `attemptedAmount`: amount attempted after availability checks.
+- `legs`: per-leg transfer results.
+- `error?`: planning/execution summary error.
+
+#### `transferBack(keypairs, options?): Promise<TransferBackResult>`
+
+Parameters:
+- `keypairs`: source keypairs to sweep back to active SDK signer.
+- `options.redepositToPool?`: redeposit swept SOL into signer's Cloak pool.
+- `options.onStatus?`: status callback.
+
+Returns (`TransferBackResult`):
+- `success`: overall transfer-back success.
+- `entries`: per-keypair details (canceled delayed jobs, fee-aware max, withdraw result).
+- `transferredBackAmount?`: total SOL sent back to signer wallet.
+- `redepositResult?`: optional deposit result when `redepositToPool` is enabled.
+- `error?`: early failure message.
+
+### Balances and cache
+
+#### `getSolBalance(utxoWalletSigned?, forceRefresh?, signer?)`
+
+Parameters:
+- `utxoWalletSigned?`: explicit UTXO identity.
+- `forceRefresh?`: bypass cache and fetch fresh UTXOs (default `false`).
+- `signer?`: signer override if no explicit signed identity is passed.
+
+Returns:
+- `Promise<UtxoBalance>` with lamports total (`BN`), UTXO count, and SOL mint id.
+
+#### `getSplBalance(mintAddress, utxoWalletSigned?, forceRefresh?, signer?)`
+
+Parameters:
+- `mintAddress`: SPL mint to query.
+- `utxoWalletSigned?`: explicit UTXO identity.
+- `forceRefresh?`: bypass cache and fetch fresh UTXOs (default `false`).
+- `signer?`: signer override.
+
+Returns:
+- `Promise<UtxoBalance>` with base-unit total (`BN`) and count for the mint.
+
+#### `batchBalanceCheck(keypairs)`
+
+Parameters:
+- `keypairs`: array of `Keypair`.
+
+Returns:
+- `Promise<BatchBalanceEntry[]>` where each item is `{ publicKey, balance }`.
+
+#### `refreshUtxos()`
+
+Returns:
+- Array of refreshed UTXO objects after clearing and refetching cache/state.
+
+#### `clearCache()`
+
+Returns:
+- `void`. Clears internal UTXO cache.
+
+### Estimation
+
+#### `getMaxTransferableAmount(options?: MaxTransferableOptions)`
+
+Parameters:
+- `numberOfWithdrawals?`: withdrawal count assumed for fixed costs (default `1`).
+- `withdrawFeeRatePercent?`: variable fee percent override (default protocol value).
+- `fixedCostPerWithdrawalSol?`: fixed per-withdrawal SOL overhead override.
+- `forceRefresh?`: force fresh source balance read (default `true`).
+- `signer?`: signer override.
+- `utxoWalletSigned?`: signed UTXO identity override.
+
+Returns (`MaxTransferableResult`):
+- `maxTransferableAmount`, `maxTransferableLamports`
+- `availableAmount`, `availableLamports`
+- `numberOfWithdrawals`, `withdrawFeeRatePercent`
+- `fixedCostPerWithdrawalSol`, `totalFixedCostSol`, `totalFixedCostLamports`
+- `estimatedVariableFeeSol`, `estimatedVariableFeeLamports`
+- `estimatedTotalFeeSol`, `estimatedTotalFeeLamports`
+
+#### `getMaxTransferrableAmount(options?)`
+
+- Backward-compatible alias of `getMaxTransferableAmount`.
+
+### Signer management
+
+#### `setSigner(signer)`
+
+Parameters:
+- `signer`: `TransactionSigner | Keypair`.
+
+Returns:
+- `void`. Sets/replaces active signer for subsequent operations.
+
+#### `clearSigner()`
+
+Returns:
+- `void`. Clears active signer and signer-derived caches.
+
+#### `getPublicKey()`
+
+Returns:
+- `PublicKey` of active signer.
+
+Throws:
+- Configuration error if signer is not configured.
+
+#### `getConnection()`
+
+Returns:
+- Current Solana `Connection` used by the SDK.
+
 ## Common examples
 
 ### Withdraw with max-withdrawable fallback
