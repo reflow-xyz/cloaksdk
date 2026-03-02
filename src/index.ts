@@ -60,6 +60,15 @@ export type {
   BatchBalanceEntry,
   MaxTransferableOptions,
   MaxTransferableResult,
+  TimedWithdrawalType,
+  TimedWithdrawal,
+  TimedWithdrawalQueryOptions,
+  CancelTimedWithdrawalOptions,
+  CancelTimedWithdrawalResult,
+  CancelManyTimedWithdrawalsOptions,
+  CancelManyTimedWithdrawalsResult,
+  CancelAllTimedWithdrawalsOptions,
+  CancelAllTimedWithdrawalsResult,
 } from './types';
 
 // Export utility functions for advanced usage

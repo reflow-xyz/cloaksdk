@@ -197,6 +197,112 @@ export interface WithdrawResult {
 }
 
 /**
+ * Timed withdrawal type discriminator
+ */
+export type TimedWithdrawalType = "sol" | "spl";
+
+/**
+ * Pending timed withdrawal record returned by relayer
+ */
+export interface TimedWithdrawal {
+  /** Numeric database ID used for cancellation */
+  id: number;
+  /** Stable UUID identifier for tracking */
+  delayedWithdrawalId: string | null;
+  /** User public key that scheduled this timed withdrawal */
+  userPubkey: string | null;
+  /** Whether this timed withdrawal is SOL or SPL */
+  type: TimedWithdrawalType | string;
+  /** Recipient public key */
+  recipient: string;
+  /** Delay configured at scheduling time (minutes) */
+  delayMinutes: number;
+  /** Scheduled execution timestamp (ISO string) */
+  executeAt: string;
+  /** Current status */
+  status: string;
+  /** Optional transaction signature if already executed */
+  transactionHash?: string | null;
+  /** Optional failure reason */
+  errorMessage?: string | null;
+  /** SPL mint address when `type` is `spl` */
+  mintAddress?: string | null;
+}
+
+/**
+ * Options for querying timed withdrawals
+ */
+export interface TimedWithdrawalQueryOptions {
+  /** Optional signer override */
+  signer?: TransactionSigner | Keypair;
+  /** Filter by withdrawal type. Default: "all" */
+  type?: TimedWithdrawalType | "all";
+}
+
+/**
+ * Options for canceling a single timed withdrawal
+ */
+export interface CancelTimedWithdrawalOptions {
+  /** Optional signer override */
+  signer?: TransactionSigner | Keypair;
+  /** Optional explicit timed withdrawal type */
+  type?: TimedWithdrawalType;
+}
+
+/**
+ * Result for canceling a single timed withdrawal
+ */
+export interface CancelTimedWithdrawalResult {
+  /** Timed withdrawal numeric ID */
+  id: number;
+  /** Timed withdrawal type if resolved */
+  type?: TimedWithdrawalType;
+  /** Whether cancellation succeeded */
+  success: boolean;
+  /** Backend success message (if provided) */
+  message?: string;
+  /** Error message for failed cancellation */
+  error?: string;
+}
+
+/**
+ * Result for canceling many timed withdrawals
+ */
+export interface CancelManyTimedWithdrawalsResult {
+  /** Whether all requested cancellations succeeded */
+  success: boolean;
+  /** Number of requested IDs after deduplication/validation */
+  requested: number;
+  /** Number of successfully canceled timed withdrawals */
+  canceled: number;
+  /** Per-ID cancellation results */
+  results: CancelTimedWithdrawalResult[];
+  /** Error message for request-level failures */
+  error?: string;
+}
+
+/**
+ * Options for canceling many timed withdrawals
+ */
+export interface CancelManyTimedWithdrawalsOptions
+  extends CancelTimedWithdrawalOptions {}
+
+/**
+ * Options for canceling all timed withdrawals
+ */
+export interface CancelAllTimedWithdrawalsOptions
+  extends TimedWithdrawalQueryOptions {}
+
+/**
+ * Result for canceling all timed withdrawals
+ */
+export interface CancelAllTimedWithdrawalsResult
+  extends CancelManyTimedWithdrawalsResult {
+  /** Number of pending timed withdrawals discovered for the wallet/type */
+  totalPending: number;
+}
+
+/**
  * UTXO balance information
  */
 export interface UtxoBalance {

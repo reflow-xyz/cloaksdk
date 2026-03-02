@@ -37,11 +37,21 @@ import type {
 	MaxTransferableOptions,
 	MaxTransferableResult,
 	LightWasm,
+	TimedWithdrawal,
+	TimedWithdrawalType,
+	TimedWithdrawalQueryOptions,
+	CancelTimedWithdrawalOptions,
+	CancelTimedWithdrawalResult,
+	CancelManyTimedWithdrawalsOptions,
+	CancelManyTimedWithdrawalsResult,
+	CancelAllTimedWithdrawalsOptions,
+	CancelAllTimedWithdrawalsResult,
 } from "../types";
 import { getMyUtxos, clearUtxoCache, refreshUtxos } from "../utils/getMyUtxos";
 import { planBatchDeposits, planBatchSplDeposits } from "../utils/batch-deposit";
 import { ErrorCodes, ConfigurationError, isCloakError } from "../errors";
 import { fetchWithRetry } from "../utils/fetchWithRetry";
+import { parseRelayerError } from "../utils/relayer-client";
 import {
 	CIRCUIT_PATH,
 	WITHDRAW_FEE_RATE,
@@ -1375,12 +1385,209 @@ export class CloakSDK {
 				error: err instanceof Error ? err.message : String(err),
 			};
 		}
-	}
+		}
 
-	/**
-	 * Check SOL balances for many keypairs in one call.
-	 */
-	async batchBalanceCheck(keyPairs: Keypair[]): Promise<BatchBalanceEntry[]> {
+		/**
+		 * Get all pending timed withdrawals for the current signer (or provided signer).
+		 */
+		async getAllTimedWithdrawals(
+			options: TimedWithdrawalQueryOptions = {},
+		): Promise<TimedWithdrawal[]> {
+			this.ensureInitialized();
+			const signer = this.resolveSigner(options.signer);
+			const filterType = options.type ?? "all";
+			return await this.fetchTimedWithdrawalsForPubkey(
+				signer.publicKey.toBase58(),
+				filterType,
+			);
+		}
+
+		/**
+		 * Cancel a single pending timed withdrawal by numeric ID.
+		 */
+		async cancelTimedWithdrawal(
+			id: number,
+			options: CancelTimedWithdrawalOptions = {},
+		): Promise<CancelTimedWithdrawalResult> {
+			this.ensureInitialized();
+			if (!Number.isInteger(id) || id <= 0) {
+				return {
+					id,
+					success: false,
+					error: "Timed withdrawal id must be a positive integer",
+				};
+			}
+
+			try {
+				const signer = this.resolveSigner(options.signer);
+				let targetType = options.type;
+				if (!targetType) {
+					const pending = await this.fetchTimedWithdrawalsForPubkey(
+						signer.publicKey.toBase58(),
+						"all",
+					);
+					const match = pending.find((withdrawal) => withdrawal.id === id);
+					targetType = this.toTimedWithdrawalType(match?.type);
+					if (!targetType) {
+						return {
+							id,
+							success: false,
+							error: `Timed withdrawal ${id} not found`,
+						};
+					}
+				}
+
+				return await this.cancelTimedWithdrawalByType(id, targetType);
+			} catch (err) {
+				return {
+					id,
+					success: false,
+					error: err instanceof Error ? err.message : String(err),
+				};
+			}
+		}
+
+		/**
+		 * Cancel multiple pending timed withdrawals by ID.
+		 */
+		async cancelManyTimedWithdrawals(
+			ids: number[],
+			options: CancelManyTimedWithdrawalsOptions = {},
+		): Promise<CancelManyTimedWithdrawalsResult> {
+			this.ensureInitialized();
+
+			const uniqueIds = Array.from(
+				new Set(
+					ids
+						.map((id) => Math.trunc(id))
+						.filter((id) => Number.isInteger(id) && id > 0),
+				),
+			);
+
+			if (uniqueIds.length === 0) {
+				return {
+					success: true,
+					requested: 0,
+					canceled: 0,
+					results: [],
+				};
+			}
+
+			try {
+				const signer = this.resolveSigner(options.signer);
+				const typeById = new Map<number, TimedWithdrawalType>();
+
+				if (options.type) {
+					for (const id of uniqueIds) {
+						typeById.set(id, options.type);
+					}
+				} else {
+					const pending = await this.fetchTimedWithdrawalsForPubkey(
+						signer.publicKey.toBase58(),
+						"all",
+					);
+					for (const withdrawal of pending) {
+						const type = this.toTimedWithdrawalType(withdrawal.type);
+						if (type) {
+							typeById.set(withdrawal.id, type);
+						}
+					}
+				}
+
+				const results: CancelTimedWithdrawalResult[] = await Promise.all(
+					uniqueIds.map(async (withdrawalId) => {
+						const type = typeById.get(withdrawalId);
+						if (!type) {
+							return {
+								id: withdrawalId,
+								success: false,
+								error: `Timed withdrawal ${withdrawalId} not found`,
+							};
+						}
+						return await this.cancelTimedWithdrawalByType(withdrawalId, type);
+					}),
+				);
+
+				const canceled = results.filter((result) => result.success).length;
+				return {
+					success: canceled === uniqueIds.length,
+					requested: uniqueIds.length,
+					canceled,
+					results,
+				};
+			} catch (err) {
+				const errorMessage =
+					err instanceof Error ? err.message : String(err);
+				return {
+					success: false,
+					requested: uniqueIds.length,
+					canceled: 0,
+					results: uniqueIds.map((withdrawalId) => ({
+						id: withdrawalId,
+						success: false,
+						error: errorMessage,
+					})),
+				};
+			}
+		}
+
+		/**
+		 * Cancel all pending timed withdrawals for the current signer.
+		 */
+		async cancelAllTimedWithdrawals(
+			options: CancelAllTimedWithdrawalsOptions = {},
+		): Promise<CancelAllTimedWithdrawalsResult> {
+			this.ensureInitialized();
+
+			try {
+				const signer = this.resolveSigner(options.signer);
+				const filterType = options.type ?? "all";
+				const pending = await this.fetchTimedWithdrawalsForPubkey(
+					signer.publicKey.toBase58(),
+					filterType,
+				);
+				const ids = pending.map((withdrawal) => withdrawal.id);
+
+				if (ids.length === 0) {
+					return {
+						success: true,
+						totalPending: 0,
+						requested: 0,
+						canceled: 0,
+						results: [],
+					};
+				}
+
+				const cancelManyResult = await this.cancelManyTimedWithdrawals(
+					ids,
+					{
+						signer,
+						type: filterType === "all" ? undefined : filterType,
+					},
+				);
+
+				return {
+					...cancelManyResult,
+					totalPending: pending.length,
+				};
+			} catch (err) {
+				const errorMessage =
+					err instanceof Error ? err.message : String(err);
+				return {
+					success: false,
+					totalPending: 0,
+					requested: 0,
+					canceled: 0,
+					results: [],
+					error: errorMessage,
+				};
+			}
+		}
+
+		/**
+		 * Check SOL balances for many keypairs in one call.
+		 */
+		async batchBalanceCheck(keyPairs: Keypair[]): Promise<BatchBalanceEntry[]> {
 		this.ensureInitialized();
 		return await Promise.all(
 			keyPairs.map(async (keypair) => {
@@ -1605,61 +1812,263 @@ export class CloakSDK {
 		return isNegative ? -value : value;
 	}
 
-	private async cancelPendingDelayedWithdrawals(
-		signed: Signed,
-	): Promise<{ canceledPending: number; warnings: string[] }> {
-		const warnings: string[] = [];
-		const payload = {
-			publicKey: signed.publicKey.toBase58(),
-			signature: Buffer.from(signed.signature).toString("base64"),
-		};
+		private async fetchTimedWithdrawalsForPubkey(
+			pubkey: string,
+			type: TimedWithdrawalType | "all",
+		): Promise<TimedWithdrawal[]> {
+			if (type === "all") {
+				const [sol, spl] = await Promise.all([
+					this.fetchTimedWithdrawalsByType(pubkey, "sol"),
+					this.fetchTimedWithdrawalsByType(pubkey, "spl"),
+				]);
+				return [...sol, ...spl].sort(
+					(a, b) =>
+						new Date(b.executeAt).getTime() -
+						new Date(a.executeAt).getTime(),
+				);
+			}
+			return await this.fetchTimedWithdrawalsByType(pubkey, type);
+		}
 
-		const endpoints = [
-			"/withdraw/delayed/cancel/all",
-			"/withdraw/delayed/cancel",
-			"/withdraw/cancel-pending",
-		];
+		private async fetchTimedWithdrawalsByType(
+			pubkey: string,
+			type: TimedWithdrawalType,
+		): Promise<TimedWithdrawal[]> {
+			const response = await fetchWithRetry(
+				`${this.relayerUrl}${this.timedWithdrawalListPath(type, pubkey)}`,
+				undefined,
+				3,
+			);
+			if (!response.ok) {
+				const errorMessage = await parseRelayerError(response);
+				throw new Error(
+					`Failed to fetch ${type} timed withdrawals (${response.status}): ${errorMessage}`,
+				);
+			}
 
-		for (const endpoint of endpoints) {
+			const body = (await response.json()) as {
+				success?: boolean;
+				error?: string;
+				withdrawals?: unknown[];
+			};
+			if (body.success === false) {
+				throw new Error(
+					body.error || `Failed to fetch ${type} timed withdrawals`,
+				);
+			}
+
+			const withdrawals = Array.isArray(body.withdrawals)
+				? body.withdrawals
+				: [];
+			return withdrawals.map((entry) =>
+				this.normalizeTimedWithdrawal(entry, type),
+			);
+		}
+
+		private normalizeTimedWithdrawal(
+			entry: unknown,
+			fallbackType: TimedWithdrawalType,
+		): TimedWithdrawal {
+			const row = (entry ?? {}) as Record<string, unknown>;
+			const idValue = row.id;
+			const parsedId =
+				typeof idValue === "number"
+					? idValue
+					: Number(idValue);
+			if (!Number.isFinite(parsedId)) {
+				throw new Error(
+					"Invalid timed withdrawal payload: missing numeric id",
+				);
+			}
+
+			const rawType =
+				typeof row.type === "string" ? row.type : fallbackType;
+			const normalizedType = this.toTimedWithdrawalType(rawType) || rawType;
+			const executeAtValue = row.executeAt;
+			const executeAt =
+				executeAtValue instanceof Date
+					? executeAtValue.toISOString()
+					: typeof executeAtValue === "string"
+						? executeAtValue
+						: "";
+
+			return {
+				id: Math.trunc(parsedId),
+				delayedWithdrawalId:
+					typeof row.delayedWithdrawalId === "string" ||
+					row.delayedWithdrawalId === null
+						? row.delayedWithdrawalId
+						: null,
+				userPubkey:
+					typeof row.userPubkey === "string" || row.userPubkey === null
+						? row.userPubkey
+						: null,
+				type: normalizedType,
+				recipient:
+					typeof row.recipient === "string" ? row.recipient : "",
+				delayMinutes:
+					typeof row.delayMinutes === "number"
+						? row.delayMinutes
+						: Number(row.delayMinutes ?? 0),
+				executeAt,
+				status:
+					typeof row.status === "string" ? row.status : "",
+				transactionHash:
+					typeof row.transactionHash === "string" ||
+					row.transactionHash === null
+						? row.transactionHash
+						: undefined,
+				errorMessage:
+					typeof row.errorMessage === "string" ||
+					row.errorMessage === null
+						? row.errorMessage
+						: undefined,
+				mintAddress:
+					typeof row.mintAddress === "string" ||
+					row.mintAddress === null
+						? row.mintAddress
+						: undefined,
+			};
+		}
+
+		private timedWithdrawalListPath(
+			type: TimedWithdrawalType,
+			pubkey: string,
+		): string {
+			const encodedPubkey = encodeURIComponent(pubkey);
+			return type === "sol"
+				? `/withdraw/delayed/user/${encodedPubkey}`
+				: `/withdraw/spl/delayed/user/${encodedPubkey}`;
+		}
+
+		private timedWithdrawalCancelPath(
+			type: TimedWithdrawalType,
+			id: number,
+		): string {
+			return type === "sol"
+				? `/withdraw/delayed/${id}`
+				: `/withdraw/spl/delayed/${id}`;
+		}
+
+		private toTimedWithdrawalType(
+			value: unknown,
+		): TimedWithdrawalType | undefined {
+			if (typeof value !== "string") {
+				return undefined;
+			}
+			const normalized = value.toLowerCase();
+			if (normalized === "sol" || normalized === "spl") {
+				return normalized;
+			}
+			return undefined;
+		}
+
+		private async cancelTimedWithdrawalByType(
+			id: number,
+			type: TimedWithdrawalType,
+		): Promise<CancelTimedWithdrawalResult> {
 			try {
 				const response = await fetchWithRetry(
-					`${this.relayerUrl}${endpoint}`,
+					`${this.relayerUrl}${this.timedWithdrawalCancelPath(type, id)}`,
 					{
-						method: "POST",
-						headers: {
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify(payload),
+						method: "DELETE",
 					},
-					1,
+					3,
 				);
-
 				if (!response.ok) {
-					warnings.push(`${endpoint} returned HTTP ${response.status}`);
-					continue;
+					const errorMessage = await parseRelayerError(response);
+					return {
+						id,
+						type,
+						success: false,
+						error: `${response.status}: ${errorMessage}`,
+					};
 				}
 
-				const data = (await response.json()) as {
-					canceled?: number;
-					cancelled?: number;
-					count?: number;
+				const body = (await response.json()) as {
+					success?: boolean;
+					message?: string;
+					error?: string;
 				};
+				if (body.success === false) {
+					return {
+						id,
+						type,
+						success: false,
+						error: body.error || "Failed to cancel timed withdrawal",
+					};
+				}
 
 				return {
-					canceledPending: Number(
-						data.canceled ?? data.cancelled ?? data.count ?? 0,
-					),
-					warnings,
+					id,
+					type,
+					success: true,
+					message: body.message || "Timed withdrawal cancelled",
 				};
 			} catch (err) {
-				warnings.push(
-					`${endpoint} failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
+				return {
+					id,
+					type,
+					success: false,
+					error: err instanceof Error ? err.message : String(err),
+				};
 			}
 		}
 
-		return { canceledPending: 0, warnings };
-	}
+		private async cancelPendingDelayedWithdrawals(
+			signed: Signed,
+		): Promise<{ canceledPending: number; warnings: string[] }> {
+			const warnings: string[] = [];
+			try {
+				const pending = await this.fetchTimedWithdrawalsForPubkey(
+					signed.publicKey.toBase58(),
+					"all",
+				);
+
+				if (pending.length === 0) {
+					return { canceledPending: 0, warnings };
+				}
+
+				const results = await Promise.all(
+					pending.map(async (withdrawal) => {
+						const type = this.toTimedWithdrawalType(withdrawal.type);
+						if (!type) {
+							return {
+								id: withdrawal.id,
+								success: false,
+								error: `Unknown timed withdrawal type: ${String(withdrawal.type)}`,
+							} as CancelTimedWithdrawalResult;
+						}
+						return await this.cancelTimedWithdrawalByType(
+							withdrawal.id,
+							type,
+						);
+					}),
+				);
+
+				const canceledPending = results.filter(
+					(result) => result.success,
+				).length;
+				for (const result of results) {
+					if (!result.success) {
+						warnings.push(
+							`Failed to cancel timed withdrawal ${result.id}: ${
+								result.error || "unknown error"
+							}`,
+						);
+					}
+				}
+
+				return { canceledPending, warnings };
+			} catch (err) {
+				warnings.push(
+					`Failed to query timed withdrawals: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return { canceledPending: 0, warnings };
+			}
+		}
 
 	/**
 	 * Query the current tree state and check if it has changed

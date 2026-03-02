@@ -21,7 +21,7 @@ async function main() {
 	try {
 		const secretKeyPath =
 			process.env.KEYPAIR_PATH ||
-			process.env.HOME + "/.config/solana/id.json";
+			process.env.HOME + "/.config/solana/id3.json";
 
 		console.log(`[INFO] Loading keypair from: ${secretKeyPath}`);
 
@@ -62,7 +62,7 @@ async function main() {
 	// Setup connection
 	const connection = new Connection(
 		process.env.RPC_URL ||
-			"https://beta.helius-rpc.com/?api-key=8cd01c14-8607-4452-b23c-46b8b2b9eaac",
+			"https://beta.helius-rpc.com/?api-key=0831d2dc-eac5-40e9-bfef-114ae11baaef",
 		"confirmed",
 	);
 
@@ -268,6 +268,77 @@ async function main() {
 	);
 
 	console.log("[INFO] SOL transfer test complete\n");
+
+	// ============================================
+	// TIMED WITHDRAWAL TESTS
+	// ============================================
+	console.log("[INFO] Starting timed withdrawal API checks...\n");
+
+	const timedWithdrawals = await sdk.getAllTimedWithdrawals();
+	console.log(
+		`[INFO] Pending timed withdrawals: ${timedWithdrawals.length}`,
+	);
+	if (timedWithdrawals.length > 0) {
+		for (const withdrawal of timedWithdrawals) {
+			console.log(
+				`[INFO] - id=${withdrawal.id} type=${withdrawal.type} status=${withdrawal.status} executeAt=${withdrawal.executeAt}`,
+			);
+		}
+	}
+
+	const cancelOneId = process.env.CANCEL_ONE_TIMED_WITHDRAWAL_ID;
+	if (cancelOneId) {
+		const parsedId = Number(cancelOneId);
+		if (Number.isInteger(parsedId) && parsedId > 0) {
+			console.log(
+				`[INFO] cancelTimedWithdrawal(${parsedId})`,
+			);
+			const result = await sdk.cancelTimedWithdrawal(parsedId);
+			console.log("[INFO] cancelTimedWithdrawal result:", result);
+		} else {
+			console.log(
+				`[WARN] Ignoring invalid CANCEL_ONE_TIMED_WITHDRAWAL_ID=${cancelOneId}`,
+			);
+		}
+	}
+
+	const cancelManyIdsRaw = process.env.CANCEL_MANY_TIMED_WITHDRAWAL_IDS;
+	if (cancelManyIdsRaw) {
+		const ids = cancelManyIdsRaw
+			.split(",")
+			.map((part) => Number(part.trim()))
+			.filter((id) => Number.isInteger(id) && id > 0);
+		if (ids.length > 0) {
+			console.log(
+				`[INFO] cancelManyTimedWithdrawals(${ids.join(", ")})`,
+			);
+			const result = await sdk.cancelManyTimedWithdrawals(ids);
+			console.log("[INFO] cancelManyTimedWithdrawals result:", result);
+		} else {
+			console.log(
+				`[WARN] Ignoring invalid CANCEL_MANY_TIMED_WITHDRAWAL_IDS=${cancelManyIdsRaw}`,
+			);
+		}
+	}
+
+	if (process.env.CANCEL_ALL_TIMED_WITHDRAWALS === "1") {
+		const typeEnv = process.env.CANCEL_ALL_TIMED_WITHDRAWALS_TYPE;
+		const type =
+			typeEnv === "sol" || typeEnv === "spl" || typeEnv === "all"
+				? typeEnv
+				: "all";
+		console.log(
+			`[WARN] cancelAllTimedWithdrawals enabled (type=${type})`,
+		);
+		const result = await sdk.cancelAllTimedWithdrawals({ type });
+		console.log("[INFO] cancelAllTimedWithdrawals result:", result);
+	} else {
+		console.log(
+			"[INFO] Skipping cancelAllTimedWithdrawals (set CANCEL_ALL_TIMED_WITHDRAWALS=1 to enable)",
+		);
+	}
+
+	console.log("[INFO] Timed withdrawal API checks complete\n");
 
 	// // ============================================
 	// // USDC TESTS
