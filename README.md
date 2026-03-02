@@ -6,6 +6,7 @@ Official TypeScript SDK for Cloak Privacy Protocol on Solana.
 
 - Added high-level transfer workflows: `transfer(...)` and `transferBack(...)`
 - Added max-withdrawable estimator: `getMaxTransferableAmount(...)`
+- Added timed withdrawal management helpers: `getAllTimedWithdrawals(...)`, `cancelTimedWithdrawal(...)`, `cancelManyTimedWithdrawals(...)`, `cancelAllTimedWithdrawals(...)`
 - Added SPL batch deposits: `batchDepositSpl(...)`
 - Added required configurable ALT support via `altAddress`
 - Added wallet adapter helpers and React hooks (`@cloak-dev/sdk/react`)
@@ -79,6 +80,13 @@ console.log('Private SOL:', bal.total.toNumber() / LAMPORTS_PER_SOL);
 - `transfer(options: TransferOptions): Promise<TransferResult>`
 - `transferBack(keypairs, options?): Promise<TransferBackResult>`
 
+### Timed withdrawal management
+
+- `getAllTimedWithdrawals(options?: TimedWithdrawalQueryOptions): Promise<TimedWithdrawal[]>`
+- `cancelTimedWithdrawal(id: number, options?: CancelTimedWithdrawalOptions): Promise<CancelTimedWithdrawalResult>`
+- `cancelManyTimedWithdrawals(ids: number[], options?: CancelManyTimedWithdrawalsOptions): Promise<CancelManyTimedWithdrawalsResult>`
+- `cancelAllTimedWithdrawals(options?: CancelAllTimedWithdrawalsOptions): Promise<CancelAllTimedWithdrawalsResult>`
+
 ### Balances and cache
 
 - `getSolBalance(utxoWalletSigned?, forceRefresh?, signer?)`
@@ -134,6 +142,28 @@ if (delayed.success) {
   console.log(delayed.delayedWithdrawalId); // string
   console.log(delayed.executeAt);           // ISO timestamp
 }
+```
+
+### Manage pending timed withdrawals
+
+```ts
+// List all pending timed withdrawals for current signer
+const pending = await sdk.getAllTimedWithdrawals({ type: 'all' });
+
+// Cancel one by numeric ID
+if (pending.length > 0) {
+  const one = await sdk.cancelTimedWithdrawal(pending[0].id);
+  if (!one.success) console.error(one.error);
+}
+
+// Cancel many IDs at once
+const ids = pending.slice(0, 3).map((w) => w.id);
+const many = await sdk.cancelManyTimedWithdrawals(ids);
+console.log(many.canceled, many.requested);
+
+// Cancel all pending SPL timed withdrawals for the signer
+const allSpl = await sdk.cancelAllTimedWithdrawals({ type: 'spl' });
+console.log(allSpl.totalPending, allSpl.canceled);
 ```
 
 ### SPL deposit/withdraw
